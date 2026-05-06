@@ -8,7 +8,7 @@ from VibraVid.utils.http_client import create_client, check_region_availability
 from VibraVid.services._base import site_constants, EntriesManager, Entries
 from VibraVid.services._base.site_search_manager import base_process_search_result, base_search
 
-from .downloader import download_series
+from .downloader import download_film, download_series
 from .client import get_client
 
 
@@ -86,10 +86,12 @@ def title_search(query: str) -> int:
             if premiere_date:
                 year = premiere_date.split('-')[0] if '-' in premiere_date else None
 
+            # Handle STANDALONE content as movies
+            content_type = 'movie' if attrs.get('showType') == 'STANDALONE' else 'tv'
             entries_manager.add(Entries(
                 id=attrs.get('alternateId'),
                 name=attrs.get('name'),
-                type='tv',
+                type=content_type,
                 image=image_url,
                 year=year
             ))
@@ -124,7 +126,7 @@ def process_search_result(select_title, selections=None, scrape_serie=None):
     """Wrapper for the generalized process_search_result function."""
     return base_process_search_result(
         select_title=select_title,
-        download_film_func=None,
+        download_film_func=download_film,
         download_series_func=download_series,
         media_search_manager=entries_manager,
         table_show_manager=table_show_manager,

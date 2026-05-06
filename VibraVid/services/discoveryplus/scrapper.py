@@ -11,6 +11,65 @@ from .client import get_client
 logger = logging.getLogger(__name__)
 
 
+class GetStandaloneInfo:
+    def __init__(self, standalone_id: str):
+        self.client = get_client()
+        self.standalone_id = standalone_id
+        self.content_info = None
+        self._get_content_info()
+
+    def _get_content_info(self):
+        """Fetch standalone content information using /cms/routes/movie endpoint"""
+        try:
+            url = f"{self.client.base_url}/cms/routes/movie/{self.standalone_id}"
+            params = {'include': 'default', 'decorators': 'isFavorite,playbackAllowed,contentAction,badges'}
+            client = create_client(headers=self.client.headers, cookies=self.client.cookies)
+            response = client.get(url, params=params)
+            client.close()
+            response.raise_for_status()
+            data = response.json()
+
+            # Search for the standalone video in included
+            self.content_info = next(
+                (x for x in data.get('included', [])
+                 if x.get('attributes', {}).get('videoType', '').lower() == 'standalone'),
+                None
+            )
+            
+            if not self.content_info:
+                logger.error(f"Standalone content not found for: {self.standalone_id}")
+                return
+
+            logger.debug(f"Loaded standalone info: {self.content_info.get('attributes', {}).get('name')}")
+
+        except Exception as e:
+            logger.error(f"Error in _get_content_info: {e}")
+
+    def get_edit_id(self):
+        """
+        Get the edit ID for playback
+        
+        Returns:
+            str: The edit ID for the standalone content
+        """
+        if not self.content_info:
+            logger.error("Content info not loaded, cannot get edit_id")
+            return None
+        
+        try:
+            edit_id = self.content_info.get('relationships', {}).get('edit', {}).get('data', {}).get('id')
+            if edit_id:
+                logger.debug(f"Edit ID: {edit_id}")
+                return edit_id
+            else:
+                logger.error("Edit ID not found in relationships")
+                return None
+        
+        except Exception as e:
+            logger.error(f"Error getting edit ID: {e}")
+            return None
+
+
 class GetSerieInfo:
     def __init__(self, show_id: str):
         """

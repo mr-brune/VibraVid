@@ -7,18 +7,53 @@ from rich.prompt import Prompt
 
 from VibraVid.utils import os_manager, config_manager, start_message
 from VibraVid.services._base import site_constants, Entries
-from VibraVid.services._base.tv_display_manager import map_episode_path
+from VibraVid.services._base.tv_display_manager import map_episode_path, map_movie_path
 from VibraVid.services._base.tv_download_manager import process_season_selection, process_episode_download
 
 from VibraVid.core.downloader import DASH_Downloader
 
 from .client import get_client
-from .scrapper import GetSerieInfo
+from .scrapper import GetSerieInfo, GetStandaloneInfo
 
 
 msg = Prompt()
 console = Console()
 extension_output = config_manager.config.get("PROCESS", "extension")
+
+
+def download_film(select_title: Entries):
+    """
+    Downloads a film using the provided Entries information.
+    """
+    start_message()
+    console.print(f"\n[yellow]Download: [red]{site_constants.SITE_NAME} [cyan]{select_title.name} \n")
+    
+    # Get standalone content info
+    scrape_content = GetStandaloneInfo(select_title.id)
+    edit_id = scrape_content.get_edit_id()
+    
+    if not edit_id:
+        console.print(f"[red]Error: Could not get edit ID for {select_title.name}")
+        return False
+    
+    # Define output path
+    path_components, filename = map_movie_path(select_title.name, select_title.year)
+    movie_path = os_manager.get_sanitize_path(
+        os.path.join(site_constants.MOVIE_FOLDER, *path_components) if path_components else site_constants.MOVIE_FOLDER
+    )
+    movie_name = f"{filename}.{extension_output}"
+    
+    # Get playback info
+    client = get_client()
+    playback_info = client.get_playback_info(edit_id)
+    
+    return DASH_Downloader(
+        mpd_url=playback_info['manifest'],
+        license_url=playback_info['license'],
+        license_headers=playback_info.get('license_headers', {}),
+        output_path=os.path.join(movie_path, movie_name),
+        drm_preference="playready"
+    ).start()
 
 
 def download_episode(obj_episode, index_season_selected, index_episode_selected, scrape_serie):
