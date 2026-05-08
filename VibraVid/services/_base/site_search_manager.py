@@ -174,7 +174,7 @@ def base_process_search_result(select_title: Optional[Entries], download_film_fu
         return False
     
     # Handle TV series
-    if str(select_title.type).lower() in ['tv', 'serie', 'ova', 'ona', 'show', 'tv short']:
+    if str(select_title.type).lower() in ['tv', 'serie', 'ova', 'ona', 'show', 'tv short', 'special']:
         if not download_series_func:
             console.print("[red]Error: download_series_func not provided for TV series")
             logger.error("download_series_func not provided for TV series")
@@ -201,7 +201,7 @@ def base_process_search_result(select_title: Optional[Entries], download_film_fu
         return True
     
     # Handle films
-    elif str(select_title.type).lower() == 'film' or str(select_title.type).lower() == 'movie':
+    elif str(select_title.type).lower() in ['movie', 'film']:
         if not download_film_func:
             console.print("[red]Error: download_film_func not provided for films")
             logger.error("download_film_func not provided for films")
