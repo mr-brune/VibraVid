@@ -158,6 +158,21 @@ def shutdown_downloads():
     download_executor.shutdown(wait=True)
 
 
+def _submit_download_task(fn):
+    """Submit a task to the download executor, recreating it if it was shutdown."""
+    global download_executor
+    try:
+        return download_executor.submit(fn)
+    except RuntimeError:
+        # Executor has been shutdown (interpreter shutdown or explicit call). Recreate.
+        try:
+            download_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="DownloadWorker")
+            return download_executor.submit(fn)
+        except Exception as exc:
+            print(f"[Error] Could not recreate download executor: {exc}")
+            raise
+
+
 # Ensure downloads are shut down on exit
 atexit.register(shutdown_downloads)
 
@@ -182,16 +197,22 @@ if threading.current_thread() is threading.main_thread():
 def _media_item_to_display_dict(item: Entries, source_alias: str) -> Dict[str, Any]:
     """Convert Entries to template-friendly dictionary."""
     poster_url = item.poster if item.poster else "https://via.placeholder.com/300x450?text=Search"
+    
+    # Treat songs as 'movie' in the GUI so they show a direct Download button
+    display_is_movie = bool(item.is_movie or (str(item.type or "").strip().lower() == 'song'))
+
     result = {
         'display_title': item.name,
         'display_type': item.type.capitalize(),
         'source': source_alias.capitalize(),
         'source_alias': source_alias,
         'bg_image_url': poster_url,
-        'is_movie': item.is_movie,
+        'is_movie': display_is_movie,
         'year': item.year
     }
-    result['payload_json'] = json.dumps({**item.__dict__, 'is_movie': item.is_movie})
+
+    # Ensure payload reflects the GUI behaviour (so start_download treats songs like single-item downloads)
+    result['payload_json'] = json.dumps({**item.__dict__, 'is_movie': display_is_movie})
     return result
 
 
@@ -307,7 +328,7 @@ def _run_download_in_thread(site: str, item_payload: Dict[str, Any], season: str
             except Exception as tracker_err:
                 print(f"[Error] Failed to update download tracker: {tracker_err}")
 
-    download_executor.submit(_task)
+    _submit_download_task(_task)
 
 
 @require_http_methods(["POST"])
@@ -580,7 +601,7 @@ def _handle_series_download(request: HttpRequest) -> HttpResponse:
             except Exception as e:
                 print(f"[Error] Full series download task: {e}")
 
-        download_executor.submit(_download_entire_series_task)
+        _submit_download_task(_download_entire_series_task)
 
         return redirect("download_dashboard")
 
@@ -658,7 +679,7 @@ def _handle_series_download(request: HttpRequest) -> HttpResponse:
             except Exception as e:
                 print(f"[Error] Selected seasons download task: {e}")
 
-        download_executor.submit(_download_selected_seasons_task)
+        _submit_download_task(_download_selected_seasons_task)
 
         return redirect("download_dashboard")
 

@@ -275,7 +275,7 @@ def join_video(video_path: str, out_path: str):
 
     if USE_GPU:
         gpu_type_hwaccel = detect_gpu_device_type()
-        console.print(f'[yellow]FFMPEG [cyan]Detected GPU for video join: [red]{gpu_type_hwaccel}')
+        console.print(f'\n[yellow]FFMPEG [cyan]Detected GPU for video join: [red]{gpu_type_hwaccel}')
         ffmpeg_cmd.extend(['-hwaccel', gpu_type_hwaccel])
 
     # Detect timestamp issues and add regeneration flag

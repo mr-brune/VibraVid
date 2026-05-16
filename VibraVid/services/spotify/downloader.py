@@ -52,15 +52,18 @@ def download_song(select_title: Entries) -> str | None:
     )
 
     # ── Download
-    path, stopped = MP4_Downloader(
+    path, stopped, error = MP4_Downloader(
         url=track.stream_url,
         path=dest_path,
         download_id=context_tracker.download_id,
         site_name=site_constants.SITE_NAME,
         label="Audio",
     )
-
     if not path or stopped:
+        return None
+    
+    if error:
+        logger.error(f"Spotify download error: {error}")
         return None
 
     return process_song(

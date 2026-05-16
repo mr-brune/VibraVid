@@ -13,11 +13,11 @@ from VibraVid.core.downloader import MP4_Downloader
 
 
 setup_logger()
-path, kill_handler = MP4_Downloader(
+path, kill_handler, error = MP4_Downloader(
     url="",
     path=r".\Video\Prova.mp4",
     key=None
 )
 
-thereIsError = path is None
+thereIsError = path is None or error is not None
 print(thereIsError)

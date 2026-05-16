@@ -59,10 +59,10 @@ class CompactTimeRemainingColumn(ProgressColumn):
 
 class ColoredSegmentColumn(ProgressColumn):
     def render(self, task):
-        segment = task.fields.get("segment", "0/0")
+        segment = task.fields.get("segment") or "0/0"
         text = Text()
         if "/" in segment:
-            current, total = segment.split("/")
+            current, total = segment.split("/", 1)
             text.append(current, style="green")
             text.append("/", style="dim")
             text.append(total, style="cyan")

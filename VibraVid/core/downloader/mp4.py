@@ -20,6 +20,7 @@ from VibraVid.utils import config_manager, os_manager, internet_manager
 from VibraVid.cli.run import execute_hooks
 from VibraVid.core.ui.progress_bar import CustomBarColumn
 from VibraVid.core.ui.tracker import download_tracker, context_tracker
+from VibraVid.core.ui.bar_manager import DownloadBarManager
 from VibraVid.utils.vault.supa import supa_vault
 from VibraVid.core.decryptor import Decryptor, KeysManager
 from VibraVid.core.decryptor._mp4_inspector import parse_binary
@@ -294,10 +295,10 @@ class MP4FileDownloader:
 
     def download(self) -> tuple:
         """
-        Execute the full pipeline.  Returns ``(path | None, interrupted: bool)``.
+        Execute the full pipeline.  Returns ``(path | None, interrupted: bool, error: Optional[str])``.
         """
         if not self._preflight():
-            return None, False
+            return None, False, None
 
         self._start_gui_tracking()
         headers = self._build_headers()
@@ -307,7 +308,7 @@ class MP4FileDownloader:
         client = create_client(headers=headers)
         try:
             if not self._check_content_type(client, headers):
-                return None, False
+                return None, False, None
             
             self._run_drm_probe(client, headers)
             self._stream_to_disk(client, headers)
@@ -416,16 +417,15 @@ class MP4FileDownloader:
             if self._total is None:
                 logger.error("No Content-Length — streaming until connection closes.")
 
-            progress_ctx = self._build_progress_ctx()
-            with progress_ctx as progress_bars:
-                task_id = (
-                    self._add_progress_task(progress_bars)
-                    if not context_tracker.is_gui
-                    else None
-                )
+            bar_mgr = DownloadBarManager(self.download_id)
+            with bar_mgr as progress_bars:
+                try:
+                    progress_bars.add_prebuilt_tasks([("video", self.label)])
+                except Exception:
+                    pass
 
                 with open(self._temp_path, "wb") as fh:
-                    self._write_chunks(fh, response, progress_bars, task_id, time.time())
+                    self._write_chunks(fh, response, progress_bars, time.time(), bar_mgr)
         finally:
             response.close()
 
@@ -445,7 +445,7 @@ class MP4FileDownloader:
             TextColumn(f"[yellow]{self.label}[/yellow] [cyan]Downloading[/cyan]: "),
             CustomBarColumn(),
             TextColumn(
-                "[bright_green]{task.fields[downloaded]}[/bright_green]"
+                "[bright_green]{task.fields[downloaded]}[/bright_green] "
                 "[bright_magenta]{task.fields[downloaded_unit]}[/bright_magenta]"
                 "[dim]/[/dim]"
                 "[bright_cyan]{task.fields[total_size]}[/bright_cyan] "
@@ -469,19 +469,22 @@ class MP4FileDownloader:
             size_val, size_unit = "--", ""
             task_total = None
         
-        return progress_bars.add_task(
-            "download",
-            total=task_total,
-            downloaded="0.00",
-            downloaded_unit="B",
-            total_size=size_val,
-            total_unit=size_unit,
-            elapsed="0s",
-            eta="--",
-            speed="-- B/s",
-        )
+        try:
+            return progress_bars.add_task(
+                "download",
+                total=task_total,
+                downloaded="0.00",
+                downloaded_unit="B",
+                total_size=size_val,
+                total_unit=size_unit,
+                elapsed="0s",
+                eta="--",
+                speed="-- B/s",
+            )
+        except Exception:
+            return None
 
-    def _write_chunks(self, fh, response, progress_bars, task_id, start_time: float) -> None:
+    def _write_chunks(self, fh, response, progress_bars, start_time: float, bar_mgr: DownloadBarManager) -> None:
         try:
             for chunk in response.iter_content(chunk_size=65536):
                 if self._interrupt.force_quit or (self.download_id and download_tracker.is_stopped(self.download_id)):
@@ -493,7 +496,7 @@ class MP4FileDownloader:
 
                 if chunk:
                     self._downloaded += fh.write(chunk)
-                    self._tick_progress(progress_bars, task_id, start_time)
+                    self._tick_progress(progress_bars, start_time, bar_mgr)
 
         except KeyboardInterrupt:
             if not self._interrupt.force_quit:
@@ -511,42 +514,40 @@ class MP4FileDownloader:
             except Exception:
                 pass
 
-    def _tick_progress(self, progress_bars, task_id, start_time: float) -> None:
+    def _tick_progress(self, progress_bars, start_time: float, bar_mgr: DownloadBarManager) -> None:
         elapsed = time.time() - start_time
         speed = self._downloaded / elapsed if elapsed > 0 else 0
         speed_str = internet_manager.format_transfer_speed(speed) if speed > 0 else "-- B/s"
-        elapsed_str = internet_manager.format_time(elapsed)
-
-        if self._total and speed > 0:
-            eta_str = internet_manager.format_time(max(self._total - self._downloaded, 0) / speed)
-        else:
-            eta_str = "--"
-
         dl_val, dl_unit = internet_manager.format_file_size(self._downloaded).split(" ")
+        percent = (self._downloaded / self._total * 100) if self._total else 0
+        total_size_str = f"{self._total / 1024 / 1024:.2f}MB" if self._total else "Unknown"
+        pct_int = max(0, min(100, int(percent)))
 
-        # GUI
-        if self.download_id:
-            percent = (self._downloaded / self._total * 100) if self._total else 0
-            total_size_str = f"{self._total / 1024 / 1024:.2f}MB" if self._total else "Unknown"
-            download_tracker.update_progress(
-                self.download_id,
-                "video",
-                progress=percent,
-                speed=speed_str,
-                size=f"{dl_val}{dl_unit}/{total_size_str}",
-            )
+        parsed = {
+            "task_key": "video",
+            "pct": percent,
+            "speed": speed_str,
+            "size": f"{dl_val}{dl_unit}/{total_size_str}",
+            "segments": f"{pct_int}/100",
+            "label": self.label,
+            "display_label": self.label,
+        }
 
-        # CLI
-        if not context_tracker.is_gui and task_id is not None:
-            progress_bars.update(
-                task_id,
-                completed=self._downloaded,
-                downloaded=dl_val,
-                downloaded_unit=dl_unit,
-                elapsed=elapsed_str,
-                eta=eta_str,
-                speed=speed_str,
-            )
+        try:
+            if bar_mgr:
+                bar_mgr.handle_progress_line(parsed)
+        except Exception:
+            try:
+                download_tracker.update_progress(
+                    self.download_id,
+                    "video",
+                    progress=parsed.get("pct"),
+                    speed=parsed.get("speed"),
+                    size=parsed.get("size"),
+                    segments=parsed.get("segments"),
+                )
+            except Exception:
+                pass
 
 
     def _finalise(self) -> tuple:
@@ -556,24 +557,24 @@ class MP4FileDownloader:
             console.print("[red]Download failed or file is empty.")
             if self.download_id:
                 download_tracker.complete_download(self.download_id, success=False, error="File missing or empty")
-            return None, self._interrupt.kill_download
+            return None, self._interrupt.kill_download, "File missing or empty"
 
         # Explicitly cancelled
         if self._incomplete_err == "cancelled":
             if self.download_id:
                 download_tracker.complete_download(self.download_id, success=False, error="cancelled")
-            return None, True
+            return None, True, "cancelled"
 
         # Atomic rename temp → final
         if not self._rename_temp():
-            return None, self._interrupt.kill_download
+            return None, self._interrupt.kill_download, None
 
         # Final file must exist now
         if not os.path.exists(self.path):
             console.print("[red]Download failed or file is empty.")
             if self.download_id:
                 download_tracker.complete_download(self.download_id, success=False, error="File missing or empty")
-            return None, self._interrupt.kill_download
+            return None, self._interrupt.kill_download, "File missing or empty"
 
         if self._incomplete_err or (self._total and os.path.getsize(self.path) < self._total):
             console.print("[yellow]Warning: download was incomplete (partial file saved).")
@@ -602,7 +603,7 @@ class MP4FileDownloader:
             console.print(f"\n[green]Sleeping {DELAY_SS} seconds before finishing...")
             time.sleep(DELAY_SS)
 
-        return self.path, self._interrupt.kill_download
+        return self.path, self._interrupt.kill_download, None
 
     def _rename_temp(self) -> bool:
         last_exc = None

@@ -105,10 +105,22 @@ def download_series(select_title: Entries, season_selection: str = None, episode
     # Manage user selection
     list_episode_select = manage_selection(last_command, episoded_count)
 
+    def unpack_download_result(result):
+        if isinstance(result, tuple):
+            if len(result) == 3:
+                return result
+            if len(result) == 2:
+                return result[0], result[1], None
+        return result, False, None
+
     # Download selected episodes
     if len(list_episode_select) == 1 and last_command != "*":
         obj_episode = scrape_serie.get_info_episode(list_episode_select[0]-1)
-        path, _ = download_episode(obj_episode, list_episode_select[0]-1, scrape_serie, video_source)
+        path, _, msg_error = unpack_download_result(download_episode(obj_episode, list_episode_select[0]-1, scrape_serie, video_source))
+
+        if msg_error:
+            console.print(f"[red]{msg_error}")
+        
         return path
 
     # Download all other episodes selected
@@ -117,5 +129,10 @@ def download_series(select_title: Entries, season_selection: str = None, episode
         for i_episode in list_episode_select:
             if kill_handler:
                 break
+            
             obj_episode = scrape_serie.get_info_episode(i_episode-1)
-            _, kill_handler = download_episode(obj_episode, i_episode-1, scrape_serie, video_source)
+            _, kill_handler, msg_error = unpack_download_result(download_episode(obj_episode, i_episode-1, scrape_serie, video_source))
+
+            if msg_error:
+                console.print(f"[red]{msg_error}")
+                kill_handler = True

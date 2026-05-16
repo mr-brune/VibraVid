@@ -132,11 +132,16 @@ def handle_direct_download(args) -> bool:
 
     try:
         if url_type == 'mp4':
-            path, cancelled = MP4_Downloader(
+            path, cancelled, error = MP4_Downloader(
                 url=url,
                 path=output,
                 headers_=headers or None,
             )
+
+            if error:
+                logger.error(f"MP4 download error: {error}")
+                console.print(f"[red]Download error: {error}")
+                return True
 
         elif url_type == 'hls':
             dl = HLS_Downloader(
@@ -149,6 +154,11 @@ def handle_direct_download(args) -> bool:
                 key=key_arg,
             )
             path, cancelled, error = dl.start()
+
+            if error:
+                logger.error(f"HLS download error: {error}")
+                console.print(f"[red]Download error: {error}")
+                return True
 
         elif url_type == 'dash':
             effective_drm = drm_choice or DRMType.WIDEVINE
@@ -163,6 +173,11 @@ def handle_direct_download(args) -> bool:
             )
             path, cancelled, error = dl.start()
 
+            if error:
+                logger.error(f"DASH download error: {error}")
+                console.print(f"[red]Download error: {error}")
+                return True
+
         elif url_type == 'ism':
             effective_drm = drm_choice or DRMType.PLAYREADY
             dl = ISM_Downloader(
@@ -175,6 +190,11 @@ def handle_direct_download(args) -> bool:
                 key=key_arg,
             )
             path, cancelled, error = dl.start()
+            
+            if error:
+                logger.error(f"ISM download error: {error}")
+                console.print(f"[red]Download error: {error}")
+                return True
 
         else:
             console.print(f"[red]Unknown stream type: {url_type}")

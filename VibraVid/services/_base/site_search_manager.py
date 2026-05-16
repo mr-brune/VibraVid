@@ -73,6 +73,14 @@ def _apply_year_filter(media_search_manager: EntriesManager, year_filter: str) -
         return len(media_search_manager.media_list or [])
 
 
+def _handle_download_result(result: Any) -> None:
+    """Print a download error message when a downloader returns one."""
+    if isinstance(result, tuple) and len(result) >= 3:
+        msg_error = result[2]
+        if msg_error:
+            console.print(f"[red]{msg_error}")
+
+
 def get_select_title(table_show_manager, media_search_manager): 
     """
     Display a selection of titles and prompt the user to choose one.
@@ -201,7 +209,8 @@ def base_process_search_result(select_title: Optional[Entries], download_film_fu
                 scrape_serie = selections.get('scrape_serie')
         
         logger.info(f"Initiating download for series with season: {season_selection}, episode: {episode_selection}")
-        download_series_func(select_title, season_selection, episode_selection, scrape_serie)
+        result = download_series_func(select_title, season_selection, episode_selection, scrape_serie)
+        _handle_download_result(result)
         
         # Clear managers if provided
         if media_search_manager:
@@ -260,7 +269,8 @@ def base_process_search_result(select_title: Optional[Entries], download_film_fu
                 scrape_serie = selections.get('scrape_serie')
  
         logger.info(f"Initiating album download with season: {season_selection}, episode: {episode_selection}")
-        download_series_func(select_title, season_selection, episode_selection, scrape_serie)
+        result = download_series_func(select_title, season_selection, episode_selection, scrape_serie)
+        _handle_download_result(result)
  
         if media_search_manager:
             media_search_manager.clear()
