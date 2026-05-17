@@ -29,6 +29,8 @@ _⚡ **Avvio rapido:** `pip install VibraVid && VibraVid`_
 - [Funzionalità avanzate](#funzionalità-avanzate)
 - [Docker](#docker)
 - [Gui](gui.md)
+- [Integrazione ARR](#integrazione-arr)
+- [Problemi noti](#problemi-noti)
 - [Progetti correlati](#progetti-correlati)
 
 ---
@@ -683,6 +685,96 @@ docker run -d --name vibravid -p 8000:8000 `
   -v "D:\Video:/app/Video" `
   vibravid
 ```
+
+---
+
+## Integrazione ARR
+
+Il blocco `ARR` permette a VibraVid di funzionare come livello di automazione tra **Seerr/Jellyseerr**, **Sonarr**, **Radarr** e la libreria multimediale. Quando abilitato, VibraVid interroga Sonarr/Radarr per i media mancanti, riceve eventi webhook, scarica tramite la sua pipeline di provider e comunica i file risultanti affinché Sonarr/Radarr possano importarli.
+
+> **L'integrazione ARR richiede che la GUI web di VibraVid sia in esecuzione.** I loop di polling, i listener webhook e i worker di download sono gestiti dal server Django. Il CLI (`VibraVid` / `python -m VibraVid`) non avvia lo stack ARR.
+
+Per la documentazione completa in inglese, inclusa la configurazione di riferimento, la mappatura dei path, la selezione provider e la configurazione webhook, consulta la [sezione ARR del README inglese](../../../README.md#arr).
+
+Di seguito i punti essenziali per iniziare.
+
+#### Configurazione minima
+
+```json
+"ARR": {
+    "enabled": true,
+    "enable_polling": true,
+    "provider_fallback": [
+        "streamingcommunity",
+        "animeunity",
+        "guardaserie"
+    ],
+    "path_mapping": {},
+    "sonarr": { "url": "http://sonarr:8989", "api_key": "" },
+    "radarr": { "url": "http://radarr:7878", "api_key": "" }
+}
+```
+
+#### Selezione del provider
+
+VibraVid sceglie il provider in questo ordine:
+
+1. **Tag in Sonarr/Radarr** (avanzato) — aggiungi il tag `provider-<sito>` al film o alla serie. Richiede di taggare ogni titolo manualmente.
+2. **Lista `provider_fallback`** (consigliato) — VibraVid scorre la lista in ordine e si ferma al primo provider che trova una corrispondenza. Nessun tag necessario; aggiungi tutti i provider che vuoi come rete di sicurezza.
+3. **Default** — solo `streamingcommunity` se la lista è vuota.
+
+Tag di controllo disponibili in Sonarr/Radarr:
+
+| Tag | Comportamento |
+|-----|---------------|
+| `hold` / `pausa` | Salta l'elemento finché il tag non viene rimosso |
+| `skip-s1`, `skip-s2`, … | Salta la stagione specificata |
+| `provider-<sito>` | Forza un provider specifico per quell'elemento |
+
+Con `"download_italian_anime_default": true`, se il provider restituisce sia la versione originale che una versione `(ITA)`, VibraVid preferisce automaticamente il doppiaggio italiano.
+
+#### Webhook (Radarr / Sonarr)
+
+Aggiungi **una sola connessione** per applicazione in Settings → Connect → Webhook.
+
+| App | URL endpoint | Trigger |
+|-----|-------------|---------|
+| Radarr | `http://<host>:<porta>/api/arr/webhook/radarr/` | On Movie Added, On Movie File Delete |
+| Sonarr | `http://<host>:<porta>/api/arr/webhook/sonarr/` | On Series Add, On Episode File Delete |
+
+Abilita nel config:
+```json
+"enable_radarr_webhook": true,
+"enable_sonarr_webhook": true
+```
+
+#### Mappatura path (ambienti separati)
+
+Se VibraVid e lo stack ARR girano in ambienti separati (es. VibraVid sull'host e Radarr in Docker), la stessa cartella fisica appare sotto percorsi diversi. Senza la mappatura, Radarr riceve un percorso che non riesce a risolvere e l'import fallisce.
+
+```json
+"path_mapping": {
+    "/media/Media/Film":   "/media/Film",
+    "/media/Media/Anime":  "/media/Anime",
+    "/media/Media/Series": "/media/Series"
+}
+```
+
+La mappatura non è necessaria quando entrambi i servizi condividono la stessa vista del filesystem.
+
+---
+
+## Problemi noti
+
+I seguenti problemi sono noti e saranno risolti nelle prossime versioni. Non compromettono la funzionalità di download ma possono influire sull'esperienza utente in scenari specifici.
+
+**Avanzamento download non visualizzato per alcuni provider**
+
+Per alcuni provider la barra di avanzamento nella GUI potrebbe non aggiornarsi o rimanere a 0% per tutta la durata del download. Il download è comunque in esecuzione in background e si completerà normalmente. Il problema è limitato alla visualizzazione del progresso.
+
+**Errori in console di Velora Bridge (connessione / rate limit)**
+
+Durante i download che passano per Velora Bridge possono comparire avvisi o errori in console come timeout di connessione, errori di lettura dello stream o messaggi di retry. Questi sono causati da condizioni di rete transitorie, rate limiting del proxy o limiti di connessione per sessione imposti dal provider. Velora Bridge effettua automaticamente dei retry e il download di solito si completa correttamente. Se gli errori persistono, verifica la configurazione del proxy e controlla che il provider non stia applicando un rate limit al tuo IP.
 
 ---
 

@@ -33,7 +33,15 @@ urlpatterns = [
     # Settings
     path("settings/", views.settings_editor, name="settings_editor"),
     path("api/save-settings/", views.save_settings, name="save_settings"),
+
     path("api/reload-config/", views.reload_config, name="reload_config"),
     path("api/upload-service/", views.upload_service_zip, name="upload_service_zip"),
     path("api/registry-status/", views.registry_status, name="registry_status"),
+
+    # ARR Integration
+    path("api/arr/webhook/seerr/", views.seerr_webhook, name="seerr_webhook"),
+    path("api/arr/webhook/sonarr/", views.sonarr_webhook, name="sonarr_webhook"),
+    path("api/arr/webhook/radarr/", views.radarr_webhook, name="radarr_webhook"),
+    path("api/arr/status/", views.arr_status, name="arr_status"),
+    path("api/arr/trigger-sync/", views.arr_trigger_sync, name="arr_trigger_sync"),
 ]

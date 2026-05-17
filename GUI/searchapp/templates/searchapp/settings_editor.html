@@ -28,19 +28,29 @@
 
   <!-- Tab Buttons -->
   <div class="flex gap-3 mb-6 flex-wrap">
-    <button 
+    <button
       id="config-tab-btn"
       onclick="switchTab('config')"
-      class="px-4 sm:px-6 py-2 sm:py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition-all tab-btn active"
+      class="tab-btn px-4 sm:px-6 py-2 sm:py-3 text-white font-bold rounded-lg transition-all active"
     >
       config.json
     </button>
-    <button 
+    <button
       id="login-tab-btn"
       onclick="switchTab('login')"
-      class="px-4 sm:px-6 py-2 sm:py-3 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-lg transition-all tab-btn"
+      class="tab-btn px-4 sm:px-6 py-2 sm:py-3 text-white font-bold rounded-lg transition-all"
     >
       login.json
+    </button>
+    <button
+      id="arr-tab-btn"
+      onclick="switchTab('arr')"
+      class="tab-btn px-4 sm:px-6 py-2 sm:py-3 text-white font-bold rounded-lg transition-all flex items-center gap-2"
+    >
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+      </svg>
+      ARR Integration
     </button>
   </div>
 
@@ -110,6 +120,201 @@
         <p id="login-message" class="mt-3 text-sm text-gray-400"></p>
       </div>
     </div>
+
+    <!-- ARR Integration Tab -->
+    <div id="arr-content" class="tab-content hidden">
+      <div class="p-4 sm:p-6 space-y-8">
+
+        <!-- Status Banner -->
+        <div id="arr-status-banner" class="bg-gray-800/60 border border-gray-700 rounded-lg p-4 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div id="arr-status-dot" class="w-3 h-3 rounded-full bg-gray-500"></div>
+            <span id="arr-status-text" class="text-sm font-medium text-gray-300">Loading status...</span>
+          </div>
+          <button
+            onclick="arrTriggerSync()"
+            id="arr-sync-btn"
+            class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-all"
+          >
+            Trigger Sync Now
+          </button>
+        </div>
+
+        <!-- General -->
+        <fieldset class="border border-gray-700 rounded-lg p-4">
+          <legend class="text-sm font-bold text-red-500 px-2">General</legend>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="arr-enabled" class="w-4 h-4 accent-red-600 rounded">
+              <span class="text-sm text-gray-200">Enable ARR Services</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="arr-polling" class="w-4 h-4 accent-red-600 rounded">
+              <span class="text-sm text-gray-200">Enable ARR Polling</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="arr-webhook" class="w-4 h-4 accent-red-600 rounded">
+              <span class="text-sm text-gray-200">Enable Seerr Webhook</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="arr-sonarr-webhook" class="w-4 h-4 accent-blue-400 rounded">
+              <span class="text-sm text-gray-200">Enable Sonarr Webhook</span>
+            </label>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="arr-radarr-webhook" class="w-4 h-4 accent-orange-400 rounded">
+              <span class="text-sm text-gray-200">Enable Radarr Webhook</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <!-- Intervals & Limits -->
+        <fieldset class="border border-gray-700 rounded-lg p-4">
+          <legend class="text-sm font-bold text-red-500 px-2">Intervals & Limits</legend>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Polling Interval (seconds)</label>
+              <input type="number" id="arr-poll-interval" min="60" step="60"
+                class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+            </div>
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Full Resync Interval (seconds)</label>
+              <input type="number" id="arr-resync-interval" min="300" step="300"
+                class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+            </div>
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Max Concurrent Downloads</label>
+              <input type="number" id="arr-max-downloads" min="1" max="5" step="1"
+                class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+            </div>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" id="arr-webhook-priority-enabled" class="w-4 h-4 accent-red-600 rounded">
+              <span class="text-sm text-gray-200">Native webhook priority</span>
+            </label>
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Native webhook window (seconds)</label>
+              <input type="number" id="arr-native-priority-window" min="0" step="5"
+                class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+            </div>
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Seerr fallback delay (seconds)</label>
+              <input type="number" id="arr-seerr-fallback-delay" min="0" step="5"
+                class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+            </div>
+          </div>
+        </fieldset>
+
+        <!-- Sonarr -->
+        <fieldset class="border border-gray-700 rounded-lg p-4">
+          <legend class="text-sm font-bold text-blue-400 px-2">Sonarr</legend>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Sonarr URL</label>
+              <input type="url" id="arr-sonarr-url" placeholder="http://localhost:8989"
+                class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+            </div>
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Sonarr API Key</label>
+              <input type="password" id="arr-sonarr-key" placeholder="API Key"
+                class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+            </div>
+          </div>
+        </fieldset>
+
+        <!-- Radarr -->
+        <fieldset class="border border-gray-700 rounded-lg p-4">
+          <legend class="text-sm font-bold text-orange-400 px-2">Radarr</legend>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Radarr URL</label>
+              <input type="url" id="arr-radarr-url" placeholder="http://localhost:7878"
+                class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+            </div>
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Radarr API Key</label>
+              <input type="password" id="arr-radarr-key" placeholder="API Key"
+                class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+            </div>
+          </div>
+        </fieldset>
+
+        <!-- Sonarr Webhook -->
+        <fieldset class="border border-gray-700 rounded-lg p-4">
+          <legend class="text-sm font-bold text-blue-400 px-2">Sonarr Webhook</legend>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Webhook Secret</label>
+            <input type="password" id="arr-sonarr-webhook-secret" placeholder="Shared secret for X-Webhook-Token"
+              class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+          </div>
+          <p class="text-xs text-gray-500 mt-2">
+            Webhook URL: <code class="text-gray-300">POST /api/arr/webhook/sonarr/</code>
+          </p>
+        </fieldset>
+
+        <!-- Radarr Webhook -->
+        <fieldset class="border border-gray-700 rounded-lg p-4">
+          <legend class="text-sm font-bold text-orange-400 px-2">Radarr Webhook</legend>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Webhook Secret</label>
+            <input type="password" id="arr-radarr-webhook-secret" placeholder="Shared secret for X-Webhook-Token"
+              class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+          </div>
+          <p class="text-xs text-gray-500 mt-2">
+            Webhook URL: <code class="text-gray-300">POST /api/arr/webhook/radarr/</code>
+          </p>
+        </fieldset>
+
+        <!-- Seerr / Webhook -->
+        <fieldset class="border border-gray-700 rounded-lg p-4">
+          <legend class="text-sm font-bold text-purple-400 px-2">Seerr / Webhook</legend>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Webhook Secret</label>
+            <input type="password" id="arr-webhook-secret" placeholder="Shared secret for X-Webhook-Token"
+              class="w-full bg-black/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-red-600 focus:outline-none">
+          </div>
+          <p class="text-xs text-gray-500 mt-2">
+            Webhook URL: <code class="text-gray-300">POST /api/arr/webhook/seerr/</code>
+          </p>
+        </fieldset>
+
+        <!-- Webhook Test Log -->
+        <fieldset class="border border-gray-700 rounded-lg p-4">
+          <legend class="text-sm font-bold text-green-400 px-2">Webhook Test Log</legend>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <span class="text-xs text-purple-400 font-semibold">Seerr</span>
+              <pre id="arr-test-seerr" class="text-xs text-gray-400 mt-1 bg-black/60 rounded p-2 max-h-32 overflow-auto">No test yet</pre>
+            </div>
+            <div>
+              <span class="text-xs text-blue-400 font-semibold">Sonarr</span>
+              <pre id="arr-test-sonarr" class="text-xs text-gray-400 mt-1 bg-black/60 rounded p-2 max-h-32 overflow-auto">No test yet</pre>
+            </div>
+            <div>
+              <span class="text-xs text-orange-400 font-semibold">Radarr</span>
+              <pre id="arr-test-radarr" class="text-xs text-gray-400 mt-1 bg-black/60 rounded p-2 max-h-32 overflow-auto">No test yet</pre>
+            </div>
+          </div>
+        </fieldset>
+
+        <!-- Save -->
+        <div class="flex gap-3 justify-end">
+          <button
+            onclick="resetArrForm()"
+            class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-lg transition-all"
+          >
+            Ripristina
+          </button>
+          <button
+            onclick="saveArrSettings()"
+            class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition-all transform hover:scale-105 active:scale-95"
+          >
+            Salva ARR Settings
+          </button>
+        </div>
+        <p id="arr-message" class="text-sm text-gray-400"></p>
+
+      </div>
+    </div>
+
   </div>
 
   <!-- Service Plugin Upload Section -->
@@ -184,20 +389,37 @@
 </div>
 
 <style>
+  .tab-btn {
+    background-color: #1f2937; /* gray-800 */
+  }
+
   .tab-btn.active {
-    @apply bg-red-600;
+    background-color: #dc2626; /* red-600 */
   }
-  
-  .tab-btn:not(.active) {
-    @apply bg-gray-800;
+
+  .tab-btn:not(.active):hover {
+    background-color: #374151; /* gray-700 */
   }
-  
+
+  .tab-btn.active:hover {
+    background-color: #b91c1c; /* red-700 */
+  }
+
   .tab-content {
     display: none;
   }
-  
+
   .tab-content.active {
     display: block;
+  }
+
+  @keyframes slide-in {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+
+  .animate-slide-in {
+    animation: slide-in 0.3s ease-out;
   }
 </style>
 
@@ -205,9 +427,9 @@
   // Store original content
   let originalConfig = '';
   let originalLogin = '';
+  let originalArrConfig = {};
 
   document.addEventListener('DOMContentLoaded', function() {
-    // Load initial content
     const config = `{{ config_content|escapejs }}`;
     const login = `{{ login_content|escapejs }}`;
     
@@ -216,14 +438,23 @@
     
     originalConfig = config;
     originalLogin = login;
+
+    // Load ARR config from config.json
+    try {
+      const parsed = JSON.parse(config);
+      const arr = parsed.ARR || {};
+      originalArrConfig = JSON.parse(JSON.stringify(arr));
+      populateArrForm(arr);
+    } catch (e) {
+      console.warn('Could not parse ARR config:', e);
+    }
+
+    fetchArrStatus();
   });
 
   function switchTab(tab) {
-    // Hide all tabs
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-    
-    // Show selected tab
     document.getElementById(tab + '-content').classList.add('active');
     document.getElementById(tab + '-tab-btn').classList.add('active');
   }
@@ -245,7 +476,6 @@
       type === 'error' ? 'text-red-400' :
       'text-blue-400'
     );
-    
     if (type === 'success' || type === 'error') {
       setTimeout(() => {
         messageEl.textContent = '';
@@ -258,68 +488,24 @@
     const editor = document.getElementById(fileType + '-editor');
     const content = editor.value.trim();
     
-    if (!content) {
-      const errMessage = fileType === 'login'
-        ? 'Login contenuto vuoto'
-        : 'Config contenuto vuoto';
-      showMessage(fileType, errMessage, 'error');
-      return;
-    }
+    if (!content) { showMessage(fileType, 'Contenuto vuoto', 'error'); return; }
     
-    // Validate JSON
-    try {
-      JSON.parse(content);
-    } catch (e) {
-      const errMessage = fileType === 'login'
-        ? `Login JSON non valido: ${e.message}`
-        : `Config JSON non valido: ${e.message}`;
-      showMessage(fileType, errMessage, 'error');
-      return;
-    }
-    
-    const savingMessage = fileType === 'login'
-      ? 'Login salvataggio in corso...'
-      : 'Config salvataggio in corso...';
-    showMessage(fileType, savingMessage, 'info');
+    try { JSON.parse(content); } catch (e) { showMessage(fileType, `JSON non valido: ${e.message}`, 'error'); return; }
+    showMessage(fileType, 'Salvataggio in corso...', 'info');
     
     try {
       const response = await fetch('{% url "save_settings" %}', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRFToken': getCookie('csrftoken')
-        },
-        body: JSON.stringify({
-          file_type: fileType,
-          content: content
-        })
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+        body: JSON.stringify({ file_type: fileType, content: content })
       });
-      
       const data = await response.json();
-      
       if (data.success) {
-        if (fileType === 'config') {
-          originalConfig = content;
-          const reloadOk = await reloadConfig(false, 'config');
-          if (reloadOk) {
-            showMessage(fileType, 'Config salvata e ricaricata', 'success');
-          } else {
-            showMessage(fileType, 'Config salvata, ma reload fallito', 'error');
-          }
-        } else {
-          originalLogin = content;
-          const reloadOk = await reloadConfig(false, 'login');
-          if (reloadOk) {
-            showMessage(fileType, 'Login salvato e ricaricato', 'success');
-          } else {
-            showMessage(fileType, 'Login salvato, ma reload fallito', 'error');
-          }
-        }
+        showMessage(fileType, data.message || 'Impostazioni salvate!', 'success');
+        if (fileType === 'config') originalConfig = content;
+        else originalLogin = content;
       } else {
-        const errMessage = fileType === 'login'
-          ? (data.error || 'Login salvataggio fallito')
-          : (data.error || 'Config salvataggio fallito');
-        showMessage(fileType, errMessage, 'error');
+        showMessage(fileType, data.error || 'Errore', 'error');
       }
     } catch (error) {
       const errMessage = fileType === 'login'
@@ -390,7 +576,203 @@
     return cookieValue;
   }
 
-  // Show config tab by default
+  // ── ARR logic ──────────────────────────────────────
+
+  function populateArrForm(arr) {
+    document.getElementById('arr-enabled').checked = !!arr.enabled;
+    document.getElementById('arr-polling').checked = arr.enable_polling !== false;
+    document.getElementById('arr-webhook').checked = !!arr.enable_seerr_webhook;
+    document.getElementById('arr-sonarr-webhook').checked = !!arr.enable_sonarr_webhook;
+    document.getElementById('arr-radarr-webhook').checked = !!arr.enable_radarr_webhook;
+    document.getElementById('arr-poll-interval').value = arr.polling_interval || 300;
+    document.getElementById('arr-resync-interval').value = arr.full_resync_interval || 21600;
+    document.getElementById('arr-max-downloads').value = arr.max_concurrent_downloads || 1;
+    document.getElementById('arr-webhook-priority-enabled').checked = arr.webhook_priority_enabled !== false;
+    document.getElementById('arr-native-priority-window').value = arr.native_webhook_priority_window_seconds || 120;
+    document.getElementById('arr-seerr-fallback-delay').value = arr.seerr_fallback_delay_seconds || 20;
+    document.getElementById('arr-sonarr-url').value = (arr.sonarr || {}).url || '';
+    document.getElementById('arr-sonarr-key').value = (arr.sonarr || {}).api_key || '';
+    document.getElementById('arr-radarr-url').value = (arr.radarr || {}).url || '';
+    document.getElementById('arr-radarr-key').value = (arr.radarr || {}).api_key || '';
+    document.getElementById('arr-webhook-secret').value = (arr.seerr || {}).webhook_secret || '';
+    document.getElementById('arr-sonarr-webhook-secret').value = (arr.sonarr_webhook || {}).webhook_secret || '';
+    document.getElementById('arr-radarr-webhook-secret').value = (arr.radarr_webhook || {}).webhook_secret || '';
+  }
+
+  function readArrForm() {
+    return {
+      enabled: document.getElementById('arr-enabled').checked,
+      enable_polling: document.getElementById('arr-polling').checked,
+      enable_seerr_webhook: document.getElementById('arr-webhook').checked,
+      enable_sonarr_webhook: document.getElementById('arr-sonarr-webhook').checked,
+      enable_radarr_webhook: document.getElementById('arr-radarr-webhook').checked,
+      polling_interval: parseInt(document.getElementById('arr-poll-interval').value) || 300,
+      full_resync_interval: parseInt(document.getElementById('arr-resync-interval').value) || 21600,
+      max_concurrent_downloads: parseInt(document.getElementById('arr-max-downloads').value) || 1,
+      webhook_priority_enabled: document.getElementById('arr-webhook-priority-enabled').checked,
+      native_webhook_priority_window_seconds: parseInt(document.getElementById('arr-native-priority-window').value) || 120,
+      seerr_fallback_delay_seconds: parseInt(document.getElementById('arr-seerr-fallback-delay').value) || 20,
+      sonarr: {
+        url: document.getElementById('arr-sonarr-url').value.trim(),
+        api_key: document.getElementById('arr-sonarr-key').value.trim(),
+      },
+      radarr: {
+        url: document.getElementById('arr-radarr-url').value.trim(),
+        api_key: document.getElementById('arr-radarr-key').value.trim(),
+      },
+      seerr: {
+        webhook_secret: document.getElementById('arr-webhook-secret').value.trim(),
+      },
+      sonarr_webhook: {
+        webhook_secret: document.getElementById('arr-sonarr-webhook-secret').value.trim(),
+      },
+      radarr_webhook: {
+        webhook_secret: document.getElementById('arr-radarr-webhook-secret').value.trim(),
+      }
+    };
+  }
+
+  function resetArrForm() {
+    populateArrForm(originalArrConfig);
+    showMessage('arr', 'ARR settings ripristinati', 'info');
+  }
+
+  async function saveArrSettings() {
+    showMessage('arr', 'Salvataggio in corso...', 'info');
+    try {
+      const configEditor = document.getElementById('config-editor');
+      let fullConfig;
+      try { fullConfig = JSON.parse(configEditor.value); } catch (e) {
+        showMessage('arr', 'config.json non valido. Correggi prima.', 'error'); return;
+      }
+      fullConfig.ARR = readArrForm();
+      const content = JSON.stringify(fullConfig, null, 4);
+      const response = await fetch('{% url "save_settings" %}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+        body: JSON.stringify({ file_type: 'config', content: content })
+      });
+      const data = await response.json();
+      if (data.success) {
+        showMessage('arr', 'ARR settings salvati!', 'success');
+        configEditor.value = content;
+        originalConfig = content;
+        originalArrConfig = JSON.parse(JSON.stringify(fullConfig.ARR));
+      } else {
+        showMessage('arr', data.error || 'Errore', 'error');
+      }
+    } catch (error) {
+      showMessage('arr', `Errore: ${error.message}`, 'error');
+    }
+  }
+
+  let lastPayloads = { seerr: null, sonarr: null, radarr: null };
+
+  async function fetchArrStatus() {
+    try {
+      const resp = await fetch('{% url "arr_status" %}');
+      const data = await resp.json();
+      const dot = document.getElementById('arr-status-dot');
+      const text = document.getElementById('arr-status-text');
+      if (data.enabled) {
+        dot.className = 'w-3 h-3 rounded-full bg-green-500 animate-pulse';
+        const parts = [];
+        if (data.polling_enabled) parts.push('Polling');
+        if (data.webhook_enabled) parts.push('Seerr-WH');
+        if (data.sonarr_webhook_enabled) parts.push('Sonarr-WH');
+        if (data.radarr_webhook_enabled) parts.push('Radarr-WH');
+        const mode = parts.length ? parts.join(' + ') : 'Enabled';
+        text.textContent = `Active — ${mode} | P:${data.stats.pending} D:${data.stats.downloading} C:${data.stats.completed} F:${data.stats.failed}`;
+      } else {
+        dot.className = 'w-3 h-3 rounded-full bg-gray-500';
+        text.textContent = 'Disabled';
+      }
+
+      // Populate test payload previews and show toast on new payloads
+      ['seerr', 'sonarr', 'radarr'].forEach(src => {
+        const key = 'last_' + src + '_test_payload';
+        const el = document.getElementById('arr-test-' + src);
+        if (el && data[key]) {
+          const payloadStr = JSON.stringify(data[key], null, 2);
+          el.textContent = payloadStr;
+          el.className = 'text-xs text-green-400 mt-1 bg-black/60 rounded p-2 max-h-32 overflow-auto';
+
+          // Show toast notification if this is a new payload
+          const payloadHash = btoa(payloadStr).slice(0, 32);
+          if (lastPayloads[src] !== payloadHash && lastPayloads[src] !== null) {
+            showWebhookToast(src, data[key]);
+          }
+          lastPayloads[src] = payloadHash;
+        }
+      });
+    } catch (e) {
+      document.getElementById('arr-status-text').textContent = 'Could not fetch status';
+    }
+  }
+
+  function showWebhookToast(source, payload) {
+    const colors = {
+      seerr: { bg: 'bg-purple-600', label: 'Seerr' },
+      sonarr: { bg: 'bg-blue-600', label: 'Sonarr' },
+      radarr: { bg: 'bg-orange-600', label: 'Radarr' }
+    };
+    const config = colors[source] || { bg: 'bg-gray-600', label: source };
+
+    const toast = document.createElement('div');
+    toast.className = `${config.bg} text-white px-4 py-3 rounded-lg shadow-xl flex items-start gap-3 max-w-sm animate-slide-in`;
+    toast.innerHTML = `
+      <svg class="w-5 h-5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+      </svg>
+      <div class="flex-1 min-w-0">
+        <p class="font-bold text-sm">Webhook Test: ${config.label}</p>
+        <p class="text-xs opacity-90 truncate">${payload.event || payload.eventType || 'Event received'}</p>
+      </div>
+      <button onclick="this.parentElement.remove()" class="flex-shrink-0 hover:opacity-70">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+        </svg>
+      </button>
+    `;
+
+    let container = document.getElementById('toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toast-container';
+      container.className = 'fixed top-4 right-4 z-50 flex flex-col gap-2';
+      document.body.appendChild(container);
+    }
+    container.appendChild(toast);
+
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateX(100%)';
+      toast.style.transition = 'all 0.3s ease';
+      setTimeout(() => toast.remove(), 300);
+    }, 5000);
+  }
+
+  async function arrTriggerSync() {
+    const btn = document.getElementById('arr-sync-btn');
+    btn.disabled = true;
+    btn.textContent = 'Syncing...';
+    try {
+      await fetch('{% url "arr_trigger_sync" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCookie('csrftoken') },
+      });
+      showMessage('arr', 'Sync avviato in background', 'success');
+    } catch (e) {
+      showMessage('arr', `Errore: ${e.message}`, 'error');
+    }
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = 'Trigger Sync Now';
+      fetchArrStatus();
+    }, 3000);
+  }
+
   switchTab('config');
 
   // ========== SERVICE ZIP UPLOAD ==========

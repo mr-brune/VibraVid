@@ -18,6 +18,16 @@ def _env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in normalized.split() if item.strip()]
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = BASE_DIR.parent
 
@@ -112,3 +122,56 @@ SESSION_COOKIE_SECURE = _env_flag("SESSION_COOKIE_SECURE", False)
 
 if _env_flag("SECURE_PROXY_SSL_HEADER_ENABLED", False):
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# ARR policy toggles (used by ARR runtime/config tooling)
+ARR_WEBHOOK_PRIORITY_ENABLED = _env_flag("ARR_WEBHOOK_PRIORITY_ENABLED", True)
+ARR_NATIVE_WEBHOOK_PRIORITY_WINDOW_SECONDS = _env_int("ARR_NATIVE_WEBHOOK_PRIORITY_WINDOW_SECONDS", 120)
+ARR_SEERR_FALLBACK_DELAY_SECONDS = _env_int("ARR_SEERR_FALLBACK_DELAY_SECONDS", 20)
+
+# ── Logging Configuration ────────────────────────────────────────────────────────
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{asctime} [{levelname}] {name}: {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "[{levelname}] {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+            "stream": "ext://sys.stderr",
+        },
+        "arr_file": {
+            "class": "logging.FileHandler",
+            "formatter": "verbose",
+            "filename": os.path.join(
+                PROJECT_ROOT, ".cache", "arr",
+                __import__("datetime").datetime.now().strftime("arr_%Y%m%d_%H%M%S.log"),
+            ),
+            "encoding": "utf-8",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": os.environ.get("DJANGO_LOG_LEVEL", "WARNING"),
+    },
+    "loggers": {
+        "searchapp.views": {
+            "handlers": ["console"],
+            "level": os.environ.get("DJANGO_LOG_LEVEL", "WARNING"),
+            "propagate": False,
+        },
+        "ARR": {
+            "handlers": ["console", "arr_file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}

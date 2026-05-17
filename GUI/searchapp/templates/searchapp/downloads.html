@@ -189,7 +189,10 @@ async function fetchWithTimeout(url, options = {}, timeout = 10000) {
 
 // ========== DOWNLOADS (INLINE) ==========
 const expandedRows = new Set();
-const UPDATE_INTERVAL = 1000;
+const UPDATE_INTERVAL_ACTIVE = 5000;   // 5s when downloads are active
+const UPDATE_INTERVAL_IDLE = 15000;    // 15s when no active downloads
+let updateIntervalId = null;
+let isPageVisible = true;
 
 // Pass Django URL to JavaScript
 window.DOWNLOADS_JSON_URL = "{% url 'get_downloads_json' %}";
@@ -416,6 +419,25 @@ function renderHistory(history) {
   }).join('');
 }
 
+function scheduleNextUpdate(data) {
+  // Clear existing interval
+  if (updateIntervalId) {
+    clearInterval(updateIntervalId);
+    updateIntervalId = null;
+  }
+
+  // Don't schedule if page is hidden
+  if (!isPageVisible) return;
+
+  // Choose interval based on active downloads
+  const hasActive = data && data.active && data.active.length > 0;
+  const interval = hasActive ? UPDATE_INTERVAL_ACTIVE : UPDATE_INTERVAL_IDLE;
+
+  updateIntervalId = setInterval(() => {
+    updateProgress();
+  }, interval);
+}
+
 function toggleTasks(id) {
   if (expandedRows.has(id)) {
     expandedRows.delete(id);
@@ -441,6 +463,7 @@ async function updateProgress() {
   renderActiveDownloads(data.active || []);
   renderScheduledDownloads(data.scheduled || []);
   renderHistory(data.history || []);
+  scheduleNextUpdate(data);
 }
 
 async function killDownload(id) {
@@ -522,12 +545,27 @@ window.killAndClearQueue = killAndClearQueue;
 window.killSeriesQueue = killSeriesQueue;
 window.clearHistory = clearHistory;
 
+// Handle page visibility changes
+document.addEventListener('visibilitychange', function() {
+  isPageVisible = !document.hidden;
+  if (isPageVisible) {
+    // Page became visible again, update immediately and restart polling
+    updateProgress();
+  } else {
+    // Page hidden, stop polling to save resources
+    if (updateIntervalId) {
+      clearInterval(updateIntervalId);
+      updateIntervalId = null;
+    }
+  }
+});
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
-  console.log('[DOWNLOADS] Initializing real-time updates...');
-  updateProgress();
-  setInterval(updateProgress, UPDATE_INTERVAL);
-  console.log('[DOWNLOADS] ✓ Real-time updates started');
+  console.log('[DOWNLOADS] Initializing smart updates...');
+  isPageVisible = !document.hidden;
+  updateProgress(); // This will schedule the next update with appropriate interval
+  console.log('[DOWNLOADS] ✓ Smart updates started (5s active, 15s idle, pauses when hidden)');
 });
 </script>
 {% endblock %}

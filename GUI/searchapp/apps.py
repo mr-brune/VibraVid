@@ -14,3 +14,10 @@ class SearchappConfig(AppConfig):
             start_watchlist_auto_loop()
         except Exception as exc:
             print(f"[WatchlistAuto] Failed to start: {exc}")
+
+        try:
+            from .arr_auto import start_arr_auto_loop
+
+            start_arr_auto_loop()
+        except Exception as exc:
+            print(f"[ARR] Failed to start auto loop: {exc}")

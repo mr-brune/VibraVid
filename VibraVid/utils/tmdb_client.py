@@ -248,17 +248,17 @@ class TMDBClient:
     def search_series(self, query: str, language_preference: str = "it"):
         """
         Search for TV series and return a list of results with details.
-        
+
         Parameters:
             - query (str): The search query
             - language_preference (str): Language preference (default: "it")
-            
+
         Returns:
             - list: List of dicts containing series info (id, name, first_air_date, popularity)
         """
         results = self._make_request("search/tv", {"query": query, "language": language_preference}).get("results", [])
         logger.info(f"Found {len(results)} TV results for query '{query}' and language '{language_preference}'")
-        
+
         series = []
         for show in results:
             series_data = {
@@ -269,8 +269,37 @@ class TMDBClient:
                 'poster_path': show.get('poster_path')
             }
             series.append(series_data)
-        
+
         return series
+
+    def get_alternative_titles(self, tmdb_id: int, media_type: str, language: str = "it") -> list:
+        """
+        Get alternative titles for a movie or TV show.
+
+        Parameters:
+            - tmdb_id (int): The TMDB ID
+            - media_type (str): "movie" or "tv"
+            - language (str): Language to get titles for (default: "it")
+
+        Returns:
+            - list: List of titles in the specified language
+        """
+        endpoint = f"{media_type}/{tmdb_id}/alternative_titles"
+        data = self._make_request(endpoint, {"language": language})
+        titles = []
+
+        # Get titles in the specified language
+        for title_data in data.get("titles", []):
+            if title_data.get("iso_3166_1") == language.upper() or title_data.get("type") == "":
+                titles.append(title_data.get("title", ""))
+
+        # Also get the main title
+        details = self._make_request(f"{media_type}/{tmdb_id}", {"language": language})
+        main_title = details.get("title" if media_type == "movie" else "name", "")
+        if main_title and main_title not in titles:
+            titles.append(main_title)
+
+        return titles
 
 
 # Istance

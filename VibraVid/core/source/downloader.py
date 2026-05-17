@@ -580,7 +580,7 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
             logger.error(f"Creazione file unificato ISM fallita: {exc}")
             return False
         
-        logger.info(f"File ISM cifrato pronto: {encrypted_temp} ({encrypted_temp.stat().st_size} bytes)")
+        logger.debug(f"File ISM cifrato pronto: {encrypted_temp} ({encrypted_temp.stat().st_size} bytes)")
         decryptor = Decryptor()
         ok = decryptor.decrypt(
             str(encrypted_temp),
@@ -603,7 +603,7 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
         if not verify_ok:
             logger.error(f"Verifica post-mux fallita per {out_path.name}: {verify_msg}")
             return False
-        logger.info(f"Verifica post-mux OK per {out_path.name}: {verify_msg}")
+        logger.debug(f"Verifica post-mux OK per {out_path.name}: {verify_msg}")
 
         bar_manager.handle_progress_line({
             "task_key": task_key,
@@ -660,7 +660,7 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
                 if not target_path.exists() or target_path.stat().st_size <= 0:
                     return
                 probe_done = True
-            logger.info(f"{protocol.upper()} probe starting -> {target_path.name} ({reason})")
+            logger.debug(f"{protocol.upper()} probe starting -> {target_path.name} ({reason})")
             self._probe_media_file(target_path)
 
         def _replace_segment_file(source_path: Path, target_path: Path, reason: str) -> None:
@@ -794,7 +794,7 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
         needs_dash_live = protocol_lower == "dash" and live_decryption and bool(self.key)
 
         if needs_hls_decrypt or needs_dash_live:
-            logger.info(f'{protocol.upper()} decrypt worker started ({"AES-128" if needs_hls_decrypt else "live DASH"})')
+            logger.debug(f'{protocol.upper()} decrypt worker started ({"AES-128" if needs_hls_decrypt else "live DASH"})')
             decrypt_thread = threading.Thread(target=_decrypt_worker, daemon=True)
             decrypt_thread.start()
 
@@ -861,7 +861,7 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
 
         # Standard merge for HLS/DASH
         merge_total_size = sum(p.stat().st_size for p in paths if p.exists())
-        logger.info(f"{protocol.upper()} binary merge starting -> {out_path.name} ({len(paths)} segs, {_fmt_size(merge_total_size)})")
+        logger.debug(f"{protocol.upper()} binary merge starting -> {out_path.name} ({len(paths)} segs, {_fmt_size(merge_total_size)})")
         bar_manager.handle_progress_line({
             "task_key": task_key,
             "pct": 100,
@@ -928,7 +928,7 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
             else:
                 plan_label = ""
 
-            logger.info(f"Starting download plan for {plan_task_key} with {len(segs)} segments")
+            logger.debug(f"Starting download plan for {plan_task_key} with {len(segs)} segments")
             plan = {
                 "project": "Velora",
                 "version": 1,

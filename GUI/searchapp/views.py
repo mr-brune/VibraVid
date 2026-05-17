@@ -8,6 +8,7 @@ import json
 import threading
 import atexit
 import signal
+import logging
 import zipfile
 import shutil
 import importlib
@@ -21,6 +22,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.contrib import messages
 from django.utils import timezone
 
+
 from .forms import SearchForm, DownloadForm
 from .models import WatchlistItem
 from .watchlist_auto import _get_interval_seconds
@@ -33,10 +35,76 @@ from VibraVid.utils.tmdb_client import tmdb_client
 from VibraVid.cli.run import execute_hooks
 
 
+logger = logging.getLogger(__name__)
+
+# Track recently processed webhooks to avoid duplicates (tmdbId -> timestamp)
+_recent_webhooks = {}  # (source, tmdbId) -> timestamp (float)
+_recent_webhooks_lock = threading.Lock()
+_WEBHOOK_DEDUP_WINDOW = 300  # 5 minutes
+
+
+def _is_recent_webhook(tmdb_id, source=None, window_seconds=None, touch=True):
+    """Return True if (source, tmdb_id) was processed in the last window_seconds.
+
+    Uses (source, tmdb_id) as key so that different webhook sources
+    (seerr vs sonarr vs radarr) don't block each other.
+    """
+    if not tmdb_id:
+        return False
+    if window_seconds is None:
+        window_seconds = _WEBHOOK_DEDUP_WINDOW
+    now = time.time()
+    key = (source, str(tmdb_id))
+    with _recent_webhooks_lock:
+        last_time = _recent_webhooks.get(key)
+        if last_time and (now - last_time) < window_seconds:
+            return True
+        if touch:
+            _recent_webhooks[key] = now
+        # Clean old entries
+        old_keys = [k for k, v in _recent_webhooks.items() if now - v > window_seconds]
+        for k in old_keys:
+            del _recent_webhooks[k]
+        return False
+
+
+def _mark_native_webhook_seen(tmdb_id, source: str):
+    if not tmdb_id:
+        return
+    _is_recent_webhook(tmdb_id, source=source, window_seconds=_WEBHOOK_DEDUP_WINDOW, touch=True)
+
+
 download_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="DownloadWorker")
 scheduled_downloads: Dict[str, Dict[str, Any]] = {}
 scheduled_downloads_lock = threading.Lock()
 cancelled_scheduled_downloads: set[str] = set()
+
+# ── Download concurrency limiter ──────────────────────────
+_download_slot_cond = threading.Condition()
+_active_downloads = 0
+_max_download_slots = 1
+
+
+def set_max_download_slots(n: int) -> None:
+    global _max_download_slots
+    _max_download_slots = max(1, n)
+    with _download_slot_cond:
+        _download_slot_cond.notify_all()
+
+
+def _acquire_download_slot() -> None:
+    global _active_downloads
+    with _download_slot_cond:
+        while _active_downloads >= _max_download_slots:
+            _download_slot_cond.wait()
+        _active_downloads += 1
+
+
+def _release_download_slot() -> None:
+    global _active_downloads
+    with _download_slot_cond:
+        _active_downloads -= 1
+        _download_slot_cond.notify()
 
 
 def _add_scheduled_download(download_id: str, title: str, site: str, media_type: str = "Film", season: str = None, episodes: str = None) -> None:
@@ -274,8 +342,13 @@ def search(request: HttpRequest) -> HttpResponse:
     )
 
 
-def _run_download_in_thread(site: str, item_payload: Dict[str, Any], season: str = None, episodes: str = None, media_type: str = "Film", audio_format: str = None) -> None:
-    """Run download in background thread."""
+def _run_download_in_thread(site: str, item_payload: Dict[str, Any], season: str = None, episodes: str = None, media_type: str = "Film", output_path: str = None, audio_format: str = None) -> "concurrent.futures.Future":
+    """Run download in background thread. Returns a Future for callers that need to wait.
+
+    Args:
+        output_path: If provided, tells VibraVid to download to this specific folder.
+        audio_format: If provided, forwarded to providers that support format selection (e.g. Spotify).
+    """
     name = item_payload.get('name', 'Unknown')
     if season and episodes:
         title = f"{name} - S{season} E{episodes}"
@@ -283,11 +356,12 @@ def _run_download_in_thread(site: str, item_payload: Dict[str, Any], season: str
         title = f"{name} - S{season}"
     else:
         title = name
-    
+
     download_id = f"{site}_{int(time.time())}_{hash(title) % 10000}"
     _add_scheduled_download(download_id, title, site, media_type, season, episodes)
-    
+
     def _task():
+        _acquire_download_slot()
         try:
             if _is_scheduled_cancelled(download_id):
                 print("[_task] Download cancelled before start")
@@ -300,26 +374,26 @@ def _run_download_in_thread(site: str, item_payload: Dict[str, Any], season: str
             context_tracker.media_type = media_type
             context_tracker.is_gui = True
             context_tracker.is_cancelled_callback = _is_scheduled_cancelled
-            
+
             api = get_api(site)
-            
+
             # Create Entries from payload
             entries_fields = {k: v for k, v in item_payload.items() if k in Entries.__dataclass_fields__}
             media_item = Entries(**entries_fields)
 
-            # If the form sent an audio_format override, attach it to the
-            # media_item so downstream APIs (e.g. Spotify) pick it up.
+            # audio_format override for providers that support it (e.g. Spotify)
             if audio_format:
                 media_item.audio_format = audio_format
 
-            # Start download. Pass audio_format if the API stub supports it
-            # (dynamic stubs do; static ones may not — degrade gracefully).
+            # output_path stored in context so downstream helpers can read it
+            if output_path:
+                context_tracker.output_path = output_path
+
             print("[_task] Calling api.start_download with:")
-            print(f"        season={season}, episodes={episodes}, audio_format={audio_format}")
+            print(f"        season={season}, episodes={episodes}, output_path={output_path}, audio_format={audio_format}")
             try:
                 api.start_download(media_item, season=season, episodes=episodes, audio_format=audio_format)
             except TypeError:
-                # Static API stub without audio_format kwarg — fall back.
                 api.start_download(media_item, season=season, episodes=episodes)
             print("[_task] ✓ Download completed successfully")
         except Exception as e:
@@ -330,16 +404,19 @@ def _run_download_in_thread(site: str, item_payload: Dict[str, Any], season: str
 
             try:
                 _remove_scheduled_download(download_id)
-                
+
                 # start it briefly just to mark it as failed in the history.
                 if download_id not in download_tracker.downloads:
                     download_tracker.start_download(download_id, title, site, media_type)
-                
+
                 download_tracker.complete_download(download_id, success=False, error=error_msg)
             except Exception as tracker_err:
                 print(f"[Error] Failed to update download tracker: {tracker_err}")
+            raise
+        finally:
+            _release_download_slot()
 
-    _submit_download_task(_task)
+    return download_executor.submit(_task)
 
 
 @require_http_methods(["POST"])
@@ -524,7 +601,7 @@ def series_detail(request: HttpRequest) -> HttpResponse:
             for ep in season.episodes:
                 ep_dict = ep.__dict__.copy()
                 lang = ep_dict.get("language") or ""
-                ep_dict["language_list"] = [langs.strip() for langs in lang.split(",") if langs.strip()] if lang else []
+                ep_dict["language_list"] = [language.strip() for language in lang.split(",") if language.strip()] if lang else []
                 episodes_data.append(ep_dict)
 
             seasons_data.append({
@@ -1422,6 +1499,479 @@ def save_settings(request: HttpRequest) -> JsonResponse:
             "success": False,
             "error": f"Errore nel salvataggio: {str(e)}"
         }, status=500)
+
+
+# ─────────────────────────────────────────────────────
+# ARR Integration Views
+# ─────────────────────────────────────────────────────
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def seerr_webhook(request: HttpRequest) -> JsonResponse:
+    """
+    Seerr/Overseerr webhook endpoint.
+    POST /api/arr/webhook/seerr/
+
+    Validates X-Webhook-Token, logs the event, and triggers immediate sync.
+    """
+    try:
+        from .arr.arr_service import _load_arr_config, trigger_webhook_sync
+        from .models import ArrWebhookEvent
+
+        # ── Log incoming request ──
+        logger.info("=" * 60)
+        logger.info("[SEERR WEBHOOK] Received request")
+        logger.info(f"[SEERR WEBHOOK] Headers: {dict(request.headers)}")
+        logger.info(f"[SEERR WEBHOOK] Method: {request.method}")
+        logger.info(f"[SEERR WEBHOOK] Content-Type: {request.content_type}")
+        logger.info(f"[SEERR WEBHOOK] Body (raw): {request.body[:2000]}")
+        logger.info("=" * 60)
+
+        cfg = _load_arr_config()
+        logger.info(f"[SEERR WEBHOOK] ARR enabled: {cfg.get('enabled')}")
+        logger.info(f"[SEERR WEBHOOK] Seerr webhook enabled: {cfg.get('enable_seerr_webhook')}")
+
+        if not cfg.get("enabled"):
+            logger.warning("[SEERR WEBHOOK] ARR services are disabled, ignoring webhook")
+            return JsonResponse({"status": "disabled", "message": "ARR services are disabled"}, status=200)
+
+        if not cfg.get("enable_seerr_webhook"):
+            logger.warning("[SEERR WEBHOOK] Seerr webhook is disabled, ignoring")
+            return JsonResponse({"status": "disabled", "message": "Seerr webhook is disabled"}, status=200)
+
+        # Validate webhook token
+        expected_secret = cfg.get("seerr", {}).get("webhook_secret", "")
+        if expected_secret:
+            token = request.headers.get("X-Webhook-Token", "")
+            logger.info(f"[SEERR WEBHOOK] Validating token: {'present' if token else 'missing'}")
+            if token != expected_secret:
+                logger.warning("[SEERR WEBHOOK] Invalid webhook token")
+                return JsonResponse({"status": "error", "message": "Invalid webhook token"}, status=403)
+
+        # Parse payload
+        try:
+            payload = json.loads(request.body.decode("utf-8"))
+        except json.JSONDecodeError:
+            logger.error("[SEERR WEBHOOK] Invalid JSON in request body")
+            return JsonResponse({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        logger.info(f"[SEERR WEBHOOK] Parsed payload: {json.dumps(payload, indent=2, ensure_ascii=False)[:1000]}")
+
+        # Detect event type
+        notification_type = payload.get("notification_type", "").upper()
+        logger.info(f"[SEERR WEBHOOK] notification_type: {notification_type}")
+
+        # Accept multiple variants: MEDIA_APPROVED, MEDIA_AUTO_APPROVED, MEDIA_PENDING, TEST_NOTIFICATION
+        if notification_type in ("MEDIA_APPROVED", "MEDIA_AUTO_APPROVED", "MEDIA_PENDING", "TEST_NOTIFICATION"):
+            event_type = notification_type
+        else:
+            event_type = "UNKNOWN"
+            logger.warning(f"[SEERR WEBHOOK] Unknown notification_type: {notification_type}")
+
+        # Log the event
+        media = payload.get("media", {}) or {}
+        media_type = str(media.get("media_type", "")).lower() or None
+        tmdb_id = media.get("tmdbId")
+        tmdb_id_str = str(tmdb_id) if tmdb_id is not None else None
+
+        webhook_event = ArrWebhookEvent.objects.create(
+            event_type=event_type,
+            source="seerr",
+            media_type=media_type,
+            tmdb_id=tmdb_id_str,
+            raw_payload=payload,
+            processed=False,
+        )
+        logger.info(f"[SEERR WEBHOOK] Created ArrWebhookEvent id={webhook_event.id}, event_type={event_type}")
+
+        # Handle test notification
+        if event_type == "TEST_NOTIFICATION":
+            webhook_event.processed = True
+            webhook_event.save(update_fields=["processed"])
+            webhook_event.event_type = "TEST"
+            webhook_event.save(update_fields=["event_type"])
+            logger.info("[SEERR WEBHOOK] Test notification processed successfully")
+            return JsonResponse({"status": "ok", "message": "Test notification received"})
+
+        # Handle media events
+        if event_type in ("MEDIA_APPROVED", "MEDIA_AUTO_APPROVED", "MEDIA_PENDING"):
+            logger.info(f"[SEERR WEBHOOK] Media: {media.get('title')} (tmdbId={media.get('tmdbId')}, type={media.get('media_type')})")
+            webhook_priority_enabled = cfg.get("webhook_priority_enabled", True)
+            native_window = int(cfg.get("native_webhook_priority_window_seconds", 120))
+            fallback_delay = int(cfg.get("seerr_fallback_delay_seconds", 20))
+
+            def _async_sync():
+                try:
+                    from django.db import close_old_connections
+                    close_old_connections()
+
+                    if webhook_priority_enabled and tmdb_id_str and media_type in {"tv", "movie"}:
+                        preferred_source = "sonarr" if media_type == "tv" else "radarr"
+                        if _is_recent_webhook(tmdb_id_str, source=preferred_source, window_seconds=native_window, touch=False):
+                            webhook_event.processed = True
+                            webhook_event.ignored_by_priority = True
+                            webhook_event.save(update_fields=["processed", "ignored_by_priority"])
+                            logger.info(
+                                f"[SEERR WEBHOOK ASYNC] Skipped by priority; native {preferred_source} webhook already handled tmdbId={tmdb_id_str}"
+                            )
+                            return
+
+                        if fallback_delay > 0:
+                            time.sleep(fallback_delay)
+                            if _is_recent_webhook(tmdb_id_str, source=preferred_source, window_seconds=native_window, touch=False):
+                                webhook_event.processed = True
+                                webhook_event.ignored_by_priority = True
+                                webhook_event.save(update_fields=["processed", "ignored_by_priority"])
+                                logger.info(
+                                    f"[SEERR WEBHOOK ASYNC] Skipped after fallback delay; native {preferred_source} webhook arrived for tmdbId={tmdb_id_str}"
+                                )
+                                return
+
+                    logger.info(f"[SEERR WEBHOOK ASYNC] Starting sync for event {webhook_event.id}")
+                    count = trigger_webhook_sync(payload)
+                    webhook_event.processed = True
+                    webhook_event.save(update_fields=["processed"])
+                    logger.info(f"[SEERR WEBHOOK ASYNC] Sync complete: {count} items enqueued")
+                except Exception as exc:
+                    webhook_event.error = str(exc)
+                    webhook_event.save(update_fields=["error"])
+                    logger.error(f"[SEERR WEBHOOK ASYNC] Sync error: {exc}", exc_info=True)
+
+            threading.Thread(target=_async_sync, daemon=True).start()
+            logger.info(f"[SEERR WEBHOOK] Started async sync thread for {event_type}")
+            return JsonResponse({"status": "ok", "message": f"Processing {event_type}"})
+
+        logger.info(f"[SEERR WEBHOOK] Event {event_type} acknowledged but not processed")
+        return JsonResponse({"status": "ok", "message": f"Event {event_type} acknowledged"})
+
+    except Exception as exc:
+        logger.error(f"[SEERR WEBHOOK] Unexpected error: {exc}", exc_info=True)
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def sonarr_webhook(request: HttpRequest) -> JsonResponse:
+    """
+    Sonarr native webhook endpoint.
+    POST /api/arr/webhook/sonarr/
+
+    Validates X-Webhook-Token, logs the event, and triggers immediate targeted sync.
+    """
+    try:
+        from .arr.arr_service import _load_arr_config, trigger_sonarr_webhook_sync
+        from .models import ArrWebhookEvent
+
+        # ── Log incoming request ──
+        logger.info("=" * 60)
+        logger.info("[SONARR WEBHOOK] Received request")
+        logger.info(f"[SONARR WEBHOOK] Headers: {dict(request.headers)}")
+        logger.info(f"[SONARR WEBHOOK] Body (raw): {request.body[:2000]}")
+        logger.info("=" * 60)
+
+        cfg = _load_arr_config()
+        logger.info(f"[SONARR WEBHOOK] ARR enabled: {cfg.get('enabled')}")
+        logger.info(f"[SONARR WEBHOOK] Sonarr webhook enabled: {cfg.get('enable_sonarr_webhook')}")
+
+        if not cfg.get("enabled"):
+            logger.warning("[SONARR WEBHOOK] ARR services are disabled, ignoring")
+            return JsonResponse({"status": "disabled", "message": "ARR services are disabled"}, status=200)
+
+        if not cfg.get("enable_sonarr_webhook"):
+            logger.warning("[SONARR WEBHOOK] Sonarr webhook is disabled, ignoring")
+            return JsonResponse({"status": "disabled", "message": "Sonarr webhook is disabled"}, status=200)
+
+        expected_secret = cfg.get("sonarr_webhook", {}).get("webhook_secret", "")
+        if expected_secret:
+            token = request.headers.get("X-Webhook-Token", "")
+            logger.info(f"[SONARR WEBHOOK] Validating token: {'present' if token else 'missing'}")
+            if token != expected_secret:
+                logger.warning("[SONARR WEBHOOK] Invalid webhook token")
+                return JsonResponse({"status": "error", "message": "Invalid webhook token"}, status=403)
+
+        try:
+            payload = json.loads(request.body.decode("utf-8"))
+        except json.JSONDecodeError:
+            logger.error("[SONARR WEBHOOK] Invalid JSON in request body")
+            return JsonResponse({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        logger.info(f"[SONARR WEBHOOK] Parsed payload: {json.dumps(payload, indent=2, ensure_ascii=False)[:1000]}")
+
+        event_type = payload.get("eventType", "UNKNOWN").upper()
+        logger.info(f"[SONARR WEBHOOK] eventType: {event_type}")
+
+        series_data = payload.get("series", {}) or {}
+        tmdb_id = series_data.get("tmdbId") or series_data.get("tvdbId")
+        tmdb_id_str = str(tmdb_id) if tmdb_id is not None else None
+        _mark_native_webhook_seen(tmdb_id_str, "sonarr")
+
+        webhook_event = ArrWebhookEvent.objects.create(
+            event_type=event_type,
+            source="sonarr",
+            media_type="tv",
+            tmdb_id=tmdb_id_str,
+            arr_item_id=series_data.get("id"),
+            raw_payload=payload,
+            processed=False,
+        )
+        logger.info(f"[SONARR WEBHOOK] Created ArrWebhookEvent id={webhook_event.id}")
+
+        if event_type == "TEST":
+            payload_str = json.dumps(payload, indent=2, ensure_ascii=False)
+            logger.info(f"[SONARR WEBHOOK TEST] Payload:\n{payload_str}")
+            webhook_event.processed = True
+            webhook_event.save(update_fields=["processed"])
+            return JsonResponse({
+                "status": "ok",
+                "message": "Test notification received",
+                "payload_preview": payload,
+            })
+
+        # Handle events that should trigger sync
+        # - DOWNLOAD/GRAB: Sonarr has downloaded episodes -> sync those episodes
+        # - SeriesAdd: Series was added to Sonarr (usually after Seerr approval) -> sync missing episodes
+        if event_type in ("DOWNLOAD", "GRAB", "SERIESADD"):
+            series_data = payload.get("series", {})
+            episodes = payload.get("episodes", [])
+            logger.info(f"[SONARR WEBHOOK] Series: {series_data.get('title')} (id={series_data.get('id')})")
+            logger.info(f"[SONARR WEBHOOK] Episodes count: {len(episodes)}")
+            logger.info(f"[SONARR WEBHOOK] Triggering sync for event {event_type}")
+
+            def _async_sync():
+                try:
+                    from django.db import close_old_connections
+                    close_old_connections()
+                    logger.info(f"[SONARR WEBHOOK ASYNC] Starting sync for event {webhook_event.id} (type={event_type})")
+                    if event_type == "SERIESADD":
+                        # For SeriesAdd, use trigger_sonarr_webhook_sync which is
+                        # designed for Sonarr native webhooks and can find the series by ID
+                        count = trigger_sonarr_webhook_sync(payload)
+                    else:
+                        count = trigger_sonarr_webhook_sync(payload)
+                    webhook_event.processed = True
+                    webhook_event.save(update_fields=["processed"])
+                    logger.info(f"[SONARR WEBHOOK ASYNC] Sync complete: {count} items enqueued")
+                except Exception as exc:
+                    webhook_event.error = str(exc)
+                    webhook_event.save(update_fields=["error"])
+                    logger.error(f"[SONARR WEBHOOK ASYNC] Sync error: {exc}", exc_info=True)
+
+            threading.Thread(target=_async_sync, daemon=True).start()
+            logger.info(f"[SONARR WEBHOOK] Started async sync thread for {event_type}")
+            return JsonResponse({"status": "ok", "message": f"Processing Sonarr event {event_type}"})
+
+        elif event_type == "SERIESDELETE":
+            logger.info("[SONARR WEBHOOK] Series deleted event ignored (no sync needed)")
+            webhook_event.processed = True
+            webhook_event.save(update_fields=["processed"])
+            return JsonResponse({"status": "ok", "message": "SeriesDelete acknowledged, no action needed"})
+
+        logger.info(f"[SONARR WEBHOOK] Event {event_type} acknowledged but not processed")
+        return JsonResponse({"status": "ok", "message": f"Event {event_type} acknowledged"})
+
+    except Exception as exc:
+        logger.error(f"[SONARR WEBHOOK] Unexpected error: {exc}", exc_info=True)
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def radarr_webhook(request: HttpRequest) -> JsonResponse:
+    """
+    Radarr native webhook endpoint.
+    POST /api/arr/webhook/radarr/
+
+    Validates X-Webhook-Token, logs the event, and triggers immediate targeted sync.
+    """
+    try:
+        from .arr.arr_service import _load_arr_config, trigger_radarr_webhook_sync
+        from .models import ArrWebhookEvent
+
+        # ── Log incoming request ──
+        logger.info("=" * 60)
+        logger.info("[RADARR WEBHOOK] Received request")
+        logger.info(f"[RADARR WEBHOOK] Headers: {dict(request.headers)}")
+        logger.info(f"[RADARR WEBHOOK] Body (raw): {request.body[:2000]}")
+        logger.info("=" * 60)
+
+        cfg = _load_arr_config()
+        logger.info(f"[RADARR WEBHOOK] ARR enabled: {cfg.get('enabled')}")
+        logger.info(f"[RADARR WEBHOOK] Radarr webhook enabled: {cfg.get('enable_radarr_webhook')}")
+
+        if not cfg.get("enabled"):
+            logger.warning("[RADARR WEBHOOK] ARR services are disabled, ignoring")
+            return JsonResponse({"status": "disabled", "message": "ARR services are disabled"}, status=200)
+
+        if not cfg.get("enable_radarr_webhook"):
+            logger.warning("[RADARR WEBHOOK] Radarr webhook is disabled, ignoring")
+            return JsonResponse({"status": "disabled", "message": "Radarr webhook is disabled"}, status=200)
+
+        expected_secret = cfg.get("radarr_webhook", {}).get("webhook_secret", "")
+        if expected_secret:
+            token = request.headers.get("X-Webhook-Token", "")
+            logger.info(f"[RADARR WEBHOOK] Validating token: {'present' if token else 'missing'}")
+            if token != expected_secret:
+                logger.warning("[RADARR WEBHOOK] Invalid webhook token")
+                return JsonResponse({"status": "error", "message": "Invalid webhook token"}, status=403)
+
+        try:
+            payload = json.loads(request.body.decode("utf-8"))
+        except json.JSONDecodeError:
+            logger.error("[RADARR WEBHOOK] Invalid JSON in request body")
+            return JsonResponse({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        logger.info(f"[RADARR WEBHOOK] Parsed payload: {json.dumps(payload, indent=2, ensure_ascii=False)[:1000]}")
+
+        event_type = payload.get("eventType", "UNKNOWN").upper()
+        logger.info(f"[RADARR WEBHOOK] eventType: {event_type}")
+
+        movie_data = payload.get("movie", {}) or {}
+        tmdb_id = movie_data.get("tmdbId")
+        tmdb_id_str = str(tmdb_id) if tmdb_id is not None else None
+        _mark_native_webhook_seen(tmdb_id_str, "radarr")
+
+        webhook_event = ArrWebhookEvent.objects.create(
+            event_type=event_type,
+            source="radarr",
+            media_type="movie",
+            tmdb_id=tmdb_id_str,
+            arr_item_id=movie_data.get("id"),
+            raw_payload=payload,
+            processed=False,
+        )
+        logger.info(f"[RADARR WEBHOOK] Created ArrWebhookEvent id={webhook_event.id}")
+
+        if event_type == "TEST":
+            payload_str = json.dumps(payload, indent=2, ensure_ascii=False)
+            logger.info(f"[RADARR WEBHOOK TEST] Payload:\n{payload_str}")
+            webhook_event.processed = True
+            webhook_event.save(update_fields=["processed"])
+            return JsonResponse({
+                "status": "ok",
+                "message": "Test notification received",
+                "payload_preview": payload,
+            })
+
+        movie_data = payload.get("movie", {})
+        logger.info(f"[RADARR WEBHOOK] Movie: {movie_data.get('title')} (id={movie_data.get('id')})")
+
+        def _async_sync():
+            try:
+                from django.db import close_old_connections
+                close_old_connections()
+                logger.info(f"[RADARR WEBHOOK ASYNC] Starting sync for event {webhook_event.id}")
+                count = trigger_radarr_webhook_sync(payload)
+                webhook_event.processed = True
+                webhook_event.save(update_fields=["processed"])
+                logger.info(f"[RADARR WEBHOOK ASYNC] Sync complete: {count} items enqueued")
+            except Exception as exc:
+                webhook_event.error = str(exc)
+                webhook_event.save(update_fields=["error"])
+                logger.error(f"[RADARR WEBHOOK ASYNC] Sync error: {exc}", exc_info=True)
+
+        threading.Thread(target=_async_sync, daemon=True).start()
+        logger.info(f"[RADARR WEBHOOK] Started async sync thread for {event_type}")
+        return JsonResponse({"status": "ok", "message": f"Processing Radarr event {event_type}"})
+
+    except Exception as exc:
+        logger.error(f"[RADARR WEBHOOK] Unexpected error: {exc}", exc_info=True)
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def arr_status(request: HttpRequest) -> JsonResponse:
+    """
+    ARR status endpoint.
+    GET /api/arr/status/
+
+    Returns current ARR configuration state and recent activity.
+    """
+    try:
+        from .arr.arr_service import _load_arr_config
+        from .models import ArrMediaRequest, ArrWebhookEvent
+
+        cfg = _load_arr_config()
+
+        # Recent counts
+        pending_count = ArrMediaRequest.objects.filter(status="pending").count()
+        downloading_count = ArrMediaRequest.objects.filter(status="downloading").count()
+        completed_count = ArrMediaRequest.objects.filter(status="completed").count()
+        failed_count = ArrMediaRequest.objects.filter(status="failed").count()
+        webhook_count = ArrWebhookEvent.objects.count()
+
+        # Latest test payloads per source
+        def _latest_test(source_hint):
+            qs = ArrWebhookEvent.objects.filter(
+                event_type__iexact="test"
+            ).order_by("-id")[:20]
+            for ev in qs:
+                p = ev.raw_payload or {}
+                if source_hint == "sonarr" and "series" in p:
+                    return p
+                if source_hint == "radarr" and "movie" in p:
+                    return p
+                if source_hint == "seerr" and "notification_type" in p:
+                    return p
+            return None
+
+        return JsonResponse({
+            "enabled": cfg.get("enabled", False),
+            "polling_enabled": cfg.get("enable_polling", False),
+            "webhook_enabled": cfg.get("enable_seerr_webhook", False),
+            "sonarr_webhook_enabled": cfg.get("enable_sonarr_webhook", False),
+            "radarr_webhook_enabled": cfg.get("enable_radarr_webhook", False),
+            "max_concurrent_downloads": cfg.get("max_concurrent_downloads", 1),
+            "webhook_priority_enabled": cfg.get("webhook_priority_enabled", True),
+            "native_webhook_priority_window_seconds": cfg.get("native_webhook_priority_window_seconds", 120),
+            "seerr_fallback_delay_seconds": cfg.get("seerr_fallback_delay_seconds", 20),
+            "polling_interval": cfg.get("polling_interval", 300),
+            "full_resync_interval": cfg.get("full_resync_interval", 21600),
+            "sonarr_configured": bool(cfg.get("sonarr", {}).get("url")),
+            "radarr_configured": bool(cfg.get("radarr", {}).get("url")),
+            "last_sonarr_test_payload": _latest_test("sonarr"),
+            "last_radarr_test_payload": _latest_test("radarr"),
+            "last_seerr_test_payload": _latest_test("seerr"),
+            "stats": {
+                "pending": pending_count,
+                "downloading": downloading_count,
+                "completed": completed_count,
+                "failed": failed_count,
+                "total_webhooks": webhook_count,
+            },
+        })
+    except Exception as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def arr_trigger_sync(request: HttpRequest) -> JsonResponse:
+    """
+    Manually trigger ARR sync.
+    POST /api/arr/trigger-sync/
+    """
+    try:
+        from .arr.arr_service import _load_arr_config, trigger_polling_sync
+
+        cfg = _load_arr_config()
+        if not cfg.get("enabled"):
+            return JsonResponse({"status": "disabled", "message": "ARR services are disabled"})
+
+        def _async_sync():
+            try:
+                from django.db import close_old_connections
+                close_old_connections()
+                count = trigger_polling_sync(full_resync=True)
+                print(f"[ARR] Manual sync complete: {count} items enqueued")
+            except Exception as exc:
+                print(f"[ARR] Manual sync error: {exc}")
+
+        threading.Thread(target=_async_sync, daemon=True).start()
+        return JsonResponse({"status": "ok", "message": "Sync triggered in background"})
+
+    except Exception as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
 
 
 @require_http_methods(["GET"])

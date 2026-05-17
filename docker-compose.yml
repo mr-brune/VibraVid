@@ -59,6 +59,18 @@ services:
       
       # Optional: Watchlist Auto-Download Interval (seconds)
       # WATCHLIST_AUTO_INTERVAL_SECONDS: "14400"
+
+      # ── ARR Integration (Sonarr / Radarr / Overseerr) ──
+      # USE_ARR_SERVICES: "false"
+      # ENABLE_ARR_POLLING: "true"
+      # ENABLE_SEERR_WEBHOOK: "false"
+      # ARR_POLLING_INTERVAL: "300"
+      # ARR_FULL_RESYNC_INTERVAL: "21600"
+      # SONARR_URL: "http://sonarr:8989"
+      # SONARR_API_KEY: ""
+      # RADARR_URL: "http://radarr:7878"
+      # RADARR_API_KEY: ""
+      # SEERR_WEBHOOK_SECRET: ""
     
     ### Restart Policy
     restart: unless-stopped

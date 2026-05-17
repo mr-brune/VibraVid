@@ -33,9 +33,9 @@
     },
     "PROCESS": {
         "use_gpu": false,
-        "param_video": ["-c:v","libx265","-crf","28","-preset","medium"],
-        "param_audio": ["-c:a","libopus","-b:a","128k"],
-        "param_final": ["-c","copy"],
+        "param_video": ["-c:v", "libx265", "-crf", "28", "-preset", "medium"],
+        "param_audio": ["-c:a", "libopus", "-b:a", "128k"],
+        "param_final": ["-c", "copy"],
         "param_song_ffmpeg": [],
         "audio_order": [],
         "subtitle_order": [],
@@ -68,6 +68,58 @@
                 "url": "https://crqczuxpqjmrjvdvqvlx.supabase.co",
                 "token": ""
             }
+        }
+    },
+    "ARR": {
+        "enabled": false,
+        "download_italian_anime_default": true,
+        "provider_fallback": [
+            "streamingcommunity",
+            "animeunity",
+            "guardaserie",
+            "discoveryplus",
+            "discovery",
+            "dmax",
+            "nove",
+            "realtime",
+            "mediasetinfinity",
+            "raiplay",
+            "homegardentv",
+            "foodnetwork",
+            "animeworld",
+            "crunchyroll",
+            "primevideo",
+            "tubitv",
+            "cinezo",
+            "mostraguarda"
+        ],
+        "path_mapping": {},
+        "enable_polling": false,
+        "enable_seerr_webhook": false,
+        "enable_sonarr_webhook": false,
+        "enable_radarr_webhook": false,
+        "polling_interval": 300,
+        "full_resync_interval": 21600,
+        "max_concurrent_downloads": 1,
+        "webhook_priority_enabled": true,
+        "native_webhook_priority_window_seconds": 120,
+        "seerr_fallback_delay_seconds": 20,
+        "sonarr": {
+            "url": "",
+            "api_key": ""
+        },
+        "radarr": {
+            "url": "",
+            "api_key": ""
+        },
+        "seerr": {
+            "webhook_secret": ""
+        },
+        "sonarr_webhook": {
+            "webhook_secret": ""
+        },
+        "radarr_webhook": {
+            "webhook_secret": ""
         }
     }
 }
