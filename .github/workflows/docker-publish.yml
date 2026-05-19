@@ -34,7 +34,6 @@ jobs:
 
     build-and-push:
         needs: check-version
-        if: needs.check-version.outputs.tag_name != ''
         runs-on: ubuntu-latest
         steps:
             - name: Checkout repository
