@@ -187,6 +187,22 @@ class TMDBClient:
 
         return None
 
+    def get_imdb_id(self, tmdb_id: int, media_type: str, language_preference: str = "it"):
+        """Return the IMDb ID associated with a TMDB movie or TV entry."""
+        details = self._make_request(f"{media_type}/{tmdb_id}", {"language": language_preference, "append_to_response": "external_ids"})
+
+        imdb_id = details.get("imdb_id")
+        if imdb_id:
+            return imdb_id
+
+        external_ids = details.get("external_ids", {}) or {}
+        imdb_id = external_ids.get("imdb_id")
+        if imdb_id:
+            return imdb_id
+
+        logger.info(f"No IMDb ID found for {media_type} TMDB ID {tmdb_id}")
+        return None
+
     def search_movie(self, query: str):
         """Search for a movie and return the TMDB ID of the first result."""
         results = self._make_request("search/movie", {"query": query, "language": "it"}).get("results", [])

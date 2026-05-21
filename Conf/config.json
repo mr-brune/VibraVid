@@ -32,6 +32,7 @@
         "cleanup_tmp_folder": true
     },
     "PROCESS": {
+        "engine": "ffmpeg",
         "use_gpu": false,
         "param_video": ["-c:v","libx265","-crf","28","-preset","medium"],
         "param_audio": ["-c:a","libopus","-b:a","128k"],
@@ -43,8 +44,7 @@
         "merge_audio": true,
         "merge_subtitle": true,
         "force_subtitle": "auto",
-        "extension": "mkv",
-        "engine": "ffmpeg"
+        "extension": "mkv"
     },
     "REQUESTS": {
         "timeout": 20,

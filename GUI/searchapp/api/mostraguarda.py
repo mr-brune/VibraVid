@@ -41,6 +41,7 @@ class MostraguardaAPI(BaseStreamingAPI):
             items = list(database.media_list)
             for element in items:
                 item_dict = element.__dict__.copy() if hasattr(element, '__dict__') else {}
+                tmdb_id = item_dict.get('tmdb_id') or item_dict.get('id')
                 
                 media_item = Entries(
                     id=item_dict.get('id'),
@@ -51,9 +52,8 @@ class MostraguardaAPI(BaseStreamingAPI):
                     url=item_dict.get('url'),
                     poster=item_dict.get('image'),
                     year=item_dict.get('year'),
-                    tmdb_id=item_dict.get('tmdb_id'),
+                    tmdb_id=tmdb_id,
                     provider_language=item_dict.get('provider_language'),
-                    raw_data=item_dict
                 )
                 results.append(media_item)
         
@@ -67,11 +67,12 @@ class MostraguardaAPI(BaseStreamingAPI):
         if media_item.is_movie:
             return None
 
+        tmdb_id = getattr(media_item, 'tmdb_id', None) or getattr(media_item, 'id', None)
         scrape_serie = self.get_cached_scraper(media_item)
         if not scrape_serie:
             scrape_serie = GetSerieInfo(
                 media_item.name,
-                getattr(media_item, 'imdb_id', None),
+                tmdb_id,
                 getattr(media_item, 'year', None)
             )
             self.set_cached_scraper(media_item, scrape_serie)
@@ -132,5 +133,5 @@ class MostraguardaAPI(BaseStreamingAPI):
             }
 
         scrape_serie = self.get_cached_scraper(media_item)
-        search_fn(direct_item=media_item.raw_data, selections=selections, scrape_serie=scrape_serie)
+        search_fn(direct_item=media_item.__dict__.copy(), selections=selections, scrape_serie=scrape_serie)
         return True

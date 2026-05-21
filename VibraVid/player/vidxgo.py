@@ -31,10 +31,10 @@ _CURRENT_SRC_RE = re.compile(r'currentSrc[^"]+"(https:[^";]+)', re.S)
 
 
 class VideoSource:
-    def __init__(self, tmdb_id: str, season_number: int = None, episode_number: int = None, embed_domain: str = "https://v.vidxgo.co", content_type: str = "series"):
-        self.tmdb_id = str(tmdb_id).strip()
-        if self.tmdb_id.startswith("tt"):
-            self.tmdb_id = self.tmdb_id[2:]
+    def __init__(self, imdb_id: str, season_number: int = None, episode_number: int = None, embed_domain: str = "https://v.vidxgo.co", content_type: str = "series"):
+        self.imdb_id = str(imdb_id).strip()
+        if self.imdb_id.startswith("tt"):
+            self.imdb_id = self.imdb_id[2:]
         
         self.season_number = season_number
         self.episode_number = episode_number
@@ -71,14 +71,14 @@ class VideoSource:
         return None
 
     def get_playlist(self) -> str | None:
-        if not self.tmdb_id:
-            logger.error("VidXgo requires a TMDB ID")
+        if not self.imdb_id:
+            logger.error("VidXgo requires an IMDb ID")
             return None
 
         if self.content_type == "movie":
-            embed_url = f"{self.embed_domain}/tt{self.tmdb_id}"
+            embed_url = f"{self.embed_domain}/tt{self.imdb_id}"
         else:
-            embed_url = f"{self.embed_domain}/tt{self.tmdb_id}/{self.season_number}/{self.episode_number}"
+            embed_url = f"{self.embed_domain}/tt{self.imdb_id}/{self.season_number}/{self.episode_number}"
 
         try:
             client = create_client()
