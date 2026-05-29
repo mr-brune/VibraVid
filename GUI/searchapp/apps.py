@@ -9,6 +9,13 @@ class SearchappConfig(AppConfig):
 
     def ready(self) -> None:
         try:
+            from VibraVid.utils.logger import setup_logger
+
+            setup_logger()
+        except Exception as exc:
+            print(f"[Logger] Failed to initialize: {exc}")
+
+        try:
             from .watchlist_auto import start_watchlist_auto_loop
 
             start_watchlist_auto_loop()
@@ -20,4 +27,4 @@ class SearchappConfig(AppConfig):
 
             start_arr_auto_loop()
         except Exception as exc:
-            print(f"[ARR] Failed to start auto loop: {exc}")
+            print(f"[ARR] Failed to start auto loop: {exc}")

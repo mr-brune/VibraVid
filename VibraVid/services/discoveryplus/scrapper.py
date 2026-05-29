@@ -70,6 +70,87 @@ class GetStandaloneInfo:
             return None
 
 
+class GetLiveInfo:
+    def __init__(self, video_id: str):
+        """
+        Initialize live event scraper for Discovery+
+
+        Args:
+            video_id (str): The video ID of the live event
+        """
+        self.client = get_client()
+        self.video_id = video_id
+        self.content_info = None
+        self._get_content_info()
+
+    def _get_content_info(self):
+        """Fetch live event information using the sport/video detail endpoint."""
+        try:
+            url = f"{self.client.base_url}/cms/routes/sport/{self.video_id}"
+            params = {'include': 'default', 'decorators': 'isFavorite,playbackAllowed,contentAction,badges'}
+            client = create_client(headers=self.client.headers, cookies=self.client.cookies)
+            response = client.get(url, params=params)
+            client.close()
+
+            if response.status_code != 200:
+                # Fallback: query the video directly via content endpoint
+                url = f"{self.client.base_url}/content/videos/{self.video_id}"
+                client = create_client(headers=self.client.headers, cookies=self.client.cookies)
+                response = client.get(url)
+                client.close()
+                response.raise_for_status()
+                data = response.json()
+                if data.get('data', {}).get('type') == 'video':
+                    self.content_info = data['data']
+                if not self.content_info:
+                    logger.error(f"Live content not found for video_id: {self.video_id}")
+                return
+
+            response.raise_for_status()
+            data = response.json()
+
+            # Use alternateId to find the content node (matches reference implementation _sport)
+            title_id = self.video_id.split("/")[-1] if "/" in self.video_id else self.video_id
+            self.content_info = next(
+                (x for x in data.get('included', [])
+                 if x.get('attributes', {}).get('alternateId', '') == title_id),
+                None
+            )
+
+            if not self.content_info:
+                logger.error(f"Live content not found for video_id: {self.video_id}")
+                return
+
+            logger.debug(f"Loaded live info: {self.content_info.get('attributes', {}).get('name')}")
+
+        except Exception as e:
+            logger.error(f"Error in GetLiveInfo._get_content_info: {e}")
+
+    def get_edit_id(self):
+        """
+        Get the edit ID for playback.
+
+        Returns:
+            str: The edit ID for the live event
+        """
+        if not self.content_info:
+            logger.error("Live content info not loaded, cannot get edit_id")
+            return None
+
+        try:
+            edit_id = self.content_info.get('relationships', {}).get('edit', {}).get('data', {}).get('id')
+            if edit_id:
+                logger.debug(f"Live edit ID: {edit_id}")
+                return edit_id
+            else:
+                logger.error("Edit ID not found in live content relationships")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error getting live edit ID: {e}")
+            return None
+
+
 class GetSerieInfo:
     def __init__(self, show_id: str):
         """

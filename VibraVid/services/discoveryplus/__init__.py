@@ -8,7 +8,7 @@ from VibraVid.utils.http_client import create_client, check_region_availability
 from VibraVid.services._base import site_constants, EntriesManager, Entries
 from VibraVid.services._base.site_search_manager import base_process_search_result, base_search
 
-from .downloader import download_film, download_series
+from .downloader import download_film, download_series, download_live
 from .client import get_client
 
 
@@ -108,14 +108,21 @@ def title_search(query: str) -> int:
                     break
 
             year = None
-            air_date = attrs.get('airDate', '')
+            air_date = attrs.get('airDate', '') or attrs.get('scheduleStart', '')
             if air_date:
                 year = air_date[:4] if len(air_date) >= 4 else None
+
+            # Distinguish live events from standalone VOD
+            video_type = attrs.get('videoType', '')
+            if video_type == 'LIVE':
+                content_type = 'live'
+            else:
+                content_type = 'movie'
 
             entries_manager.add(Entries(
                 id=element.get('id'),
                 name=attrs.get('name'),
-                type='movie',
+                type=content_type,
                 image=image_url,
                 year=year
             ))
@@ -128,6 +135,7 @@ def process_search_result(select_title, selections=None, scrape_serie=None):
         select_title=select_title,
         download_film_func=download_film,
         download_series_func=download_series,
+        download_live_func=download_live,
         media_search_manager=entries_manager,
         table_show_manager=table_show_manager,
         selections=selections,

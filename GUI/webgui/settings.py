@@ -3,6 +3,7 @@
 import os
 import sys
 from pathlib import Path
+from datetime import datetime
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -134,6 +135,20 @@ try:
 except Exception:
     pass
 
+# ── VibraVid log level (read from config so Django stays in sync) ────────────────
+try:
+    from VibraVid.utils import config_manager as _vm_config
+    _VIBRAVID_LOG_LEVEL = _vm_config.config.get("DEFAULT", "log_level", default="INFO").upper()
+except Exception:
+    _VIBRAVID_LOG_LEVEL = "INFO"
+
+_VV_LOG_DIR = PROJECT_ROOT / ".cache" / "logs"
+try:
+    _VV_LOG_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+_VV_LOG_FILE = str(_VV_LOG_DIR / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
 # ── Logging Configuration ────────────────────────────────────────────────────────
 LOGGING = {
     "version": 1,
@@ -143,9 +158,9 @@ LOGGING = {
             "format": "{asctime} [{levelname}] {name}: {message}",
             "style": "{",
         },
-        "simple": {
-            "format": "[{levelname}] {name}: {message}",
-            "style": "{",
+        "vibravid": {
+            "format": "[%(asctime)s.%(msecs)03d] [%(levelname)s] [%(name)s] %(message)s",
+            "datefmt": "%H:%M:%S",
         },
     },
     "handlers": {
@@ -154,24 +169,37 @@ LOGGING = {
             "formatter": "verbose",
             "stream": "ext://sys.stderr",
         },
+        "vibravid_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "formatter": "vibravid",
+            "filename": _VV_LOG_FILE,
+            "maxBytes": 10 * 1024 * 1024,
+            "backupCount": 5,
+            "encoding": "utf-8",
+        },
         "arr_file": {
             "class": "logging.FileHandler",
             "formatter": "verbose",
             "filename": os.path.join(
                 PROJECT_ROOT, ".cache", "arr",
-                __import__("datetime").datetime.now().strftime("arr_%Y%m%d_%H%M%S.log"),
+                datetime.now().strftime("arr_%Y%m%d_%H%M%S.log"),
             ),
             "encoding": "utf-8",
         },
     },
     "root": {
-        "handlers": ["console"],
-        "level": os.environ.get("DJANGO_LOG_LEVEL", "WARNING"),
+        "handlers": ["vibravid_file"],
+        "level": os.environ.get("DJANGO_LOG_LEVEL", _VIBRAVID_LOG_LEVEL),
     },
     "loggers": {
-        "searchapp.views": {
+        "django": {
             "handlers": ["console"],
-            "level": os.environ.get("DJANGO_LOG_LEVEL", "WARNING"),
+            "level": "INFO",
+            "propagate": False,
+        },
+        "searchapp": {
+            "handlers": ["console", "vibravid_file"],
+            "level": os.environ.get("DJANGO_LOG_LEVEL", _VIBRAVID_LOG_LEVEL),
             "propagate": False,
         },
         "ARR": {

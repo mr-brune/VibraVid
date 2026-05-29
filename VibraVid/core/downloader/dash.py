@@ -10,8 +10,10 @@ from rich.console import Console
 
 from VibraVid.utils import config_manager, os_manager
 from VibraVid.utils.http_client import get_headers
+from VibraVid.core.source.download_utils import parse_max_time as _parse_max_time
 from VibraVid.setup import get_wvd_path, get_prd_path
 from VibraVid.core.ui.tracker import download_tracker, context_tracker
+from VibraVid.core.ui.ui import build_table
 from VibraVid.core.utils.media_players import MediaPlayers
 
 from VibraVid.core.source.downloader import MediaDownloader
@@ -161,7 +163,7 @@ class DASH_Downloader(BaseDownloader):
     def __init__(self, mpd_url: Optional[str] = None, mpd_headers: Optional[Dict[str, str]] = None,
         license_url: Optional[str] = None, license_headers: Optional[Dict[str, str]] = None, license_certificate: Optional[str] = None, license_data: Optional[str] = None,
         output_path: Optional[str] = None, drm_preference = DRMType.WIDEVINE, key: Optional[str] = None, cookies: Optional[Dict[str, str]] = None,
-        max_segments: Optional[int] = None, other_tracks: Optional[list] = None,
+        max_segments: Optional[int] = None, max_time=None, other_tracks: Optional[list] = None,
     ):
         """
         Parameters:
@@ -175,6 +177,7 @@ class DASH_Downloader(BaseDownloader):
             - key: Manual decryption key (hex format) if known.
             - cookies: HTTP cookies for authenticated requests.
             - max_segments: Maximum number of segments to download (for testing). Default: None (all).
+            - max_time: Maximum content duration to download, e.g. "01:00:00" or 3600 seconds. Default: None (all).
         """
         self.mpd_url = self._resolve_url(str(mpd_url).strip()) if mpd_url else None
         self.mpd_headers = mpd_headers or get_headers()
@@ -204,6 +207,7 @@ class DASH_Downloader(BaseDownloader):
         self.key = key
         self.cookies = cookies or {}
         self.max_segments = max_segments
+        self.max_time = _parse_max_time(max_time)
         self.drm_manager = DRMManager(
             get_wvd_path(),
             get_prd_path(),
@@ -216,6 +220,7 @@ class DASH_Downloader(BaseDownloader):
 
         self.decryption_keys = []
         self.media_downloader = None
+        self.custom_filters: Optional[Dict] = None
 
     def _collect_drm_from_streams(self, streams: list, check_selected: bool = True) -> Dict[str, List[Dict]]:
         """
@@ -435,7 +440,7 @@ class DASH_Downloader(BaseDownloader):
                 audio_dl.custom_filters = {
                     "video": "false",
                     "audio": "for=best",
-                    "subtitle": SUBTITLE_FILTER,
+                    "subtitle": (self.custom_filters or {}).get("subtitle") or SUBTITLE_FILTER,
                 }
 
                 if self.download_id:
@@ -532,19 +537,23 @@ class DASH_Downloader(BaseDownloader):
             download_id=self.download_id,
             site_name=self.site_name,
             max_segments=self.max_segments,
+            max_time=self.max_time,
         )
         self.media_downloader.other_tracks = self._merge_other_tracks
         self.media_downloader.license_url = self.license_url
         self.media_downloader.drm_type = self.drm_preference
+        if self.custom_filters:
+            self.media_downloader.custom_filters = self.custom_filters
 
-        if self._subtitle_tracks and SUBTITLE_FILTER != "false":
+        eff_sub_filter = (self.custom_filters or {}).get("subtitle") or SUBTITLE_FILTER
+        if self._subtitle_tracks and eff_sub_filter != "false":
             normalized_subs = [_to_external_subtitle_track(track) for track in self._subtitle_tracks]
-            filtered_subs = _filter_subtitles(normalized_subs, SUBTITLE_FILTER)
+            filtered_subs = _filter_subtitles(normalized_subs, eff_sub_filter)
             if filtered_subs:
                 console.print(f"[dim]Adding {len(filtered_subs)} external subtitle(s) (filtered from {len(self._subtitle_tracks)}).")
                 self.media_downloader.external_subtitles.extend(filtered_subs)
             else:
-                console.print(f"[dim]No subtitles matched filter '{SUBTITLE_FILTER}' in {len(self._subtitle_tracks)}.")
+                console.print(f"[dim]No subtitles matched filter '{eff_sub_filter}' in {len(self._subtitle_tracks)}.")
 
         if self._dash_audio_tracks and AUDIO_FILTER != "false":
             console.print(f"[dim]Adding {len(self._dash_audio_tracks)} external audio(s) (filtered from {len(self._dash_audio_tracks)}).")
@@ -553,7 +562,30 @@ class DASH_Downloader(BaseDownloader):
         if self.download_id:
             download_tracker.update_status(self.download_id, "Parsing DASH ...")
 
-        streams = self.media_downloader.parse_stream(show_table=context_tracker.should_print)
+        # Parse without showing table so we can annotate the DV companion first
+        streams = self.media_downloader.parse_stream(show_table=False)
+
+        # StreamSelector marks the DV companion with dv_companion=True when &dv is in the filter
+        _dv_companion_stream = next(
+            (s for s in streams if getattr(s, "dv_companion", False)),
+            None,
+        )
+        if _dv_companion_stream is not None:
+            dv_quality = getattr(_dv_companion_stream, "dv_companion_quality", "worst") or "worst"
+            self._merge_other_tracks.append({"type": "video:dv", "url": self.mpd_url, "quality": dv_quality})
+            self.media_downloader.other_tracks = list(self._merge_other_tracks)
+            logger.info(f"&dv: DV companion found, added to other_tracks (quality={dv_quality!r})")
+
+        # Show table: temporarily mark DV companion as selected so it appears highlighted
+        if context_tracker.should_print and streams:
+            _was_selected = None
+            if _dv_companion_stream is not None:
+                _was_selected = _dv_companion_stream.selected
+                _dv_companion_stream.selected = True
+            
+            console.print(build_table(streams))
+            if _dv_companion_stream is not None and _was_selected is not None:
+                _dv_companion_stream.selected = _was_selected
 
         _, raw_mpd_str, _ = self.media_downloader.get_metadata()
         raw_mpd = raw_mpd_str if raw_mpd_str and raw_mpd_str != "None" else None

@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode
 
 from rich.console import Console
 
@@ -126,7 +126,7 @@ def _is_ad_period(period_url: str, period_element) -> bool:
     asset_text = (asset_identifier.text or "").strip().lower() if asset_identifier is not None else ""
     asset_is_ad = any(token in asset_text for token in ("ad", "advert", "impression", "preroll", "midroll", "postroll"))
     xlink_is_ad = xlink_actuate == "onload"
-    logger.info(f"_is_ad_period | url={period_url} | url_ad={url_is_ad} | xlink_onload={xlink_is_ad} | asset_ad={asset_is_ad} | has_drm={has_drm}")
+    logger.debug(f"_is_ad_period | url={period_url} | url_ad={url_is_ad} | xlink_onload={xlink_is_ad} | asset_ad={asset_is_ad} | has_drm={has_drm}")
     
     if (url_is_ad or xlink_is_ad or asset_is_ad) and not has_drm:
         return True
@@ -167,10 +167,15 @@ class DashParser:
     def _calc_base_url(url: str) -> str:
         return calc_base_url(url)
     
-    @staticmethod
-    def _inherit_query(segment_url: str, source_query: str) -> str:
+    # Query keys that route a request to the MANIFEST or carry MPD session context.
+    _MANIFEST_ONLY_QUERY_KEYS = frozenset({
+        "ismaster", "rtype", "ctx", "ps", "pid", "reg",
+    })
+
+    @classmethod
+    def _inherit_query(cls, segment_url: str, source_query: str) -> str:
         """
-        Append *source_query* to *segment_url* if the segment has no query string of its own.  
+        Append *source_query* to *segment_url* if the segment has no query string of its own.
         This propagates auth tokens (e.g. dazn-token) from the MPD URL to every generated segment URL.
         """
         if not source_query:
@@ -179,7 +184,18 @@ class DashParser:
         if p.query:
             # Segment already has its own query — do not touch it
             return segment_url
-        return urlunparse(p._replace(query=source_query))
+
+        filtered = [
+            (k, v) for k, v in parse_qsl(source_query, keep_blank_values=True)
+            if k.lower() not in cls._MANIFEST_ONLY_QUERY_KEYS
+        ]
+        if not filtered:
+            return segment_url
+
+        # Preserve the original raw encoding when no key was stripped
+        if len(filtered) == len(parse_qsl(source_query, keep_blank_values=True)):
+            return urlunparse(p._replace(query=source_query))
+        return urlunparse(p._replace(query=urlencode(filtered)))
 
     def fetch_manifest(self) -> bool:
         if self._injected:
@@ -264,9 +280,10 @@ class DashParser:
             if _is_ad_period(period_base_url, period):
                 logger.info(f"DASH period skipped (advertisement) | period={period_idx} url={period_base_url}")
                 continue
-            
+
             period_start = self._parse_iso_duration(period.get("start", ""))
             period_duration = self._parse_iso_duration(period.get("duration", dur_str))
+            period_seen_keys: set = set()
 
             for adapt_idx, adapt in enumerate(period.findall("mpd:AdaptationSet", _NS)):
                 adapt_base_url = self._resolve_element_base_url(adapt, period_base_url)
@@ -306,11 +323,23 @@ class DashParser:
                         continue
 
                     dedup_key = _stream_dedup_key(s)
-                    if dedup_key in global_seen_keys:
-                        logger.debug(f"DASH stream skipped (duplicate) | id={rep_id!r} period={period_idx} lang={s.language} bw={s.bitrate} codec={s.codecs}")
-                        continue
-                    global_seen_keys.add(dedup_key)
 
+                    if dedup_key in period_seen_keys:
+                        # Duplicate representation ID within the same Period (different AdaptationSet)
+                        logger.debug(f"DASH stream skipped (intra-period duplicate) | id={rep_id!r} period={period_idx}")
+                        continue
+
+                    period_seen_keys.add(dedup_key)
+
+                    if dedup_key in global_seen_keys:
+                        logger.debug(f"DASH stream extended (multi-period) | id={rep_id!r} period={period_idx} lang={s.language} bw={s.bitrate}")
+                        for existing_stream in streams:
+                            if _stream_dedup_key(existing_stream) == dedup_key:
+                                existing_stream.segments.extend(s.segments)
+                                break
+                        continue
+
+                    global_seen_keys.add(dedup_key)
                     streams.append(s)
                     logger.info(f"DASH add | {s}")
 
@@ -722,6 +751,7 @@ class DashParser:
                 d = int(s_el.get("d", 0))
                 r = int(s_el.get("r", 0))
 
+                seg_dur_s = d / timescale if timescale > 0 else 0.0
                 for _ in range(r + 1):
                     seg_url = self._expand_segment_template_tokens(
                         media_tpl,
@@ -732,7 +762,7 @@ class DashParser:
                     )
 
                     stream.add_segment(Segment(
-                        self._inherit_query(urljoin(base_url, seg_url), self._mpd_query), seg_num, "media"
+                        self._inherit_query(urljoin(base_url, seg_url), self._mpd_query), seg_num, "media", duration=seg_dur_s
                     ))
                     current_time += d
                     seg_num += 1
@@ -754,11 +784,14 @@ class DashParser:
                 total_segments = math.ceil(stream.duration * timescale / seg_duration)
                 number_iter = range(start_num, start_num + total_segments)
 
+            seg_dur_s = seg_duration / timescale if timescale > 0 else 0.0
             for i in number_iter:
                 seg_url = self._expand_segment_template_tokens(media_tpl, rep_id, bandwidth, number=i)
                 stream.add_segment(Segment(
-                    self._inherit_query(urljoin(base_url, seg_url), self._mpd_query), i, "media"
+                    self._inherit_query(urljoin(base_url, seg_url), self._mpd_query), i, "media",
+                    duration=seg_dur_s,
                 ))
+        
         elif "$Time" in media_tpl:
             logger.error("DashParser: SegmentTemplate $Time$ without SegmentTimeline — skipping")
 

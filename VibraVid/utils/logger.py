@@ -58,7 +58,12 @@ def setup_logger(name=None, no_log: bool = False):
     root_logger = logging.getLogger()
     root_logger.setLevel(LOG_LEVEL)
 
-    if not root_logger.handlers:
+    already_has_file_handler = any(
+        isinstance(h, (RotatingFileHandler, logging.FileHandler))
+        for h in root_logger.handlers
+    )
+
+    if not already_has_file_handler:
         try:
             file_handler = RotatingFileHandler(
                 str(_log_file),

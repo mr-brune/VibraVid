@@ -26,9 +26,9 @@ from .font import FontManager
 # suppress ttconv logging (Merging ISD paragraphs/regions)
 logging.getLogger("ttconv").setLevel(logging.WARNING)
 
-
 console = Console()
 logger = logging.getLogger(__name__)
+_XML10_INVALID = re.compile('[\x00-\x08\x0B\x0C\x0E-\x1F￾￿]')
 
 
 def _get_declared_xml_encoding(block: bytes) -> Optional[str]:
@@ -41,6 +41,11 @@ def _get_declared_xml_encoding(block: bytes) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _sanitize_xml(s: str) -> str:
+    """Remove characters that are invalid in XML 1.0."""
+    return _XML10_INVALID.sub('', s)
 
 
 def _decode_ttml_block(block: bytes) -> str:
@@ -66,8 +71,18 @@ def _decode_ttml_block(block: bytes) -> str:
             continue
         tried.add(encoding)
         try:
-            return block.decode(encoding)
+            decoded = block.decode(encoding)
+
+            # A TTML block must start with '<' after stripping any BOM.
+            # Skip encodings that mangle the start (e.g. UTF-16 turning '<tt' into CJK).
+            stripped_start = decoded.lstrip('﻿￾')
+            if stripped_start and stripped_start[0] != '<':
+                continue
+            
+            logger.debug(f"Decoded TTML block with encoding: {encoding}")
+            return decoded
         except Exception:
+            logger.debug(f"Failed to decode TTML block with encoding: {encoding}")
             continue
 
     raise UnicodeDecodeError('utf-8', block, 0, min(len(block), 1), 'could not decode TTML block with supported encodings')
@@ -130,11 +145,22 @@ def convert_ttml_to_format(ttml_path: str, output_path: Optional[str] = None, ta
 
         # Extract TTML blocks from plain XML or fragmented MP4 payloads.
         # Supports both XML declaration-prefixed documents and raw <tt> blocks.
-        ttml_blocks = re.findall(
+        raw_blocks = re.findall(
             br'(?:<\?xml[^>]*\?>\s*)?<tt\b.*?</tt>',
             data,
             re.DOTALL,
         )
+
+        # Discard binary false-positives: real TTML XML is valid UTF-8; binary
+        # MP4 box data that accidentally contains <tt...>...</tt> bytes is not.
+        ttml_blocks = []
+        for blk in raw_blocks:
+            try:
+                blk.decode('utf-8')
+                ttml_blocks.append(blk)
+            except UnicodeDecodeError:
+                logger.debug(f"Discarding non-UTF-8 block that matched TTML pattern in {os.path.basename(ttml_path)}")
+                pass
 
         if not ttml_blocks:
             # Try to see if it's a plain TTML without the XML declaration or just one block
@@ -156,7 +182,7 @@ def convert_ttml_to_format(ttml_path: str, output_path: Optional[str] = None, ta
         for index, block in enumerate(ttml_blocks, start=1):
             try:
                 # Decode and parse TTML
-                ttml_str = _decode_ttml_block(block)
+                ttml_str = _sanitize_xml(_decode_ttml_block(block))
                 root = et.fromstring(ttml_str)
                 tree = et.ElementTree(root)
 

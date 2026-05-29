@@ -1,6 +1,7 @@
 # 01.04.24
 
 from pathlib import Path
+from typing import Optional
 
 
 def normalize_path_key(path_value: str) -> str:
@@ -68,3 +69,23 @@ def fmt_dur(seconds: float) -> str:
     h, rem = divmod(s, 3600)
     m, sec = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
+
+
+def parse_max_time(value) -> Optional[float]:
+    """Parse "HH:MM:SS", "MM:SS", int, or float → seconds. Returns None when falsy."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else None
+    s = str(value).strip()
+    if not s:
+        return None
+    parts = s.split(":")
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        return float(s)
+    except ValueError:
+        return None

@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from VibraVid.core.utils.codec import get_codec_token
+from VibraVid.core.utils.codec import get_codec_token, DV_CODEC_PREFIXES
 
 
 logger = logging.getLogger(__name__)
@@ -584,7 +584,15 @@ def _subtitle_variant_key(s) -> Tuple[str, ...]:
 
 class StreamSelector:
     def __init__(self, video_filter: str, audio_filter: str, subtitle_filter: str, formatter: BaseFormatter = None):
-        self._vf = (video_filter or "best").strip()
+        raw_vf = (video_filter or "best").strip()
+        m = re.search(r'&dv(?:=([^&]*))?', raw_vf, re.IGNORECASE)   # select_video in config.json
+        if m:
+            self._dv_quality: Optional[str] = (m.group(1) or "worst").strip() or "worst"
+            raw_vf = (raw_vf[:m.start()] + raw_vf[m.end():]).strip()
+        else:
+            self._dv_quality = None
+        
+        self._vf = raw_vf
         self._af = (audio_filter or "best").strip()
         self._sf = (subtitle_filter or "all").strip()
         self._formatter = formatter or StreamSelectorFormatter()
@@ -598,6 +606,10 @@ class StreamSelector:
         rv = self._select_video(streams, pv)
         ra = self._select_audio(streams, pa)
         rs = self._select_subtitle(streams, ps)
+
+        if self._dv_quality is not None:
+            videos = [s for s in streams if getattr(s, "type", "") == "video"]
+            self._mark_dv_companion(videos, self._dv_quality)
 
         sv = self._formatter.format(rv)
         sa = self._formatter.format(ra)
@@ -931,6 +943,35 @@ class StreamSelector:
             if lang not in seen:
                 seen[lang] = True
                 s.selected = True
+
+    def _mark_dv_companion(self, video_streams: list, quality: str) -> None:
+        """Find the DV companion stream and mark it with dv_companion=True (not selected)."""
+        def _is_dv(s) -> bool:
+            codecs = (getattr(s, "codecs", "") or "").lower()
+            if any(codecs.startswith(p) for p in DV_CODEC_PREFIXES):
+                return True
+            return (getattr(s, "video_range", "") or "").upper() == "DV"
+
+        dv_streams = [s for s in video_streams if _is_dv(s) and not getattr(s, "selected", False)]
+        if not dv_streams:
+            logger.info("StreamSelector &dv: no unselected DV streams found")
+            return
+
+        q = (quality or "worst").strip().lower()
+        sortable = [s for s in dv_streams if _bitrate(s)]
+        pool = sortable or dv_streams
+
+        if q == "best":
+            companion = max(pool, key=_bitrate)
+        elif re.match(r"^\d+$", q):
+            target_h = int(q)
+            companion = min(pool, key=lambda s: abs(_height(s) - target_h))
+        else:
+            companion = min(pool, key=_bitrate)
+
+        companion.dv_companion = True
+        companion.dv_companion_quality = quality
+        logger.info(f"StreamSelector &dv: marked companion {_height(companion)}p/{_codecs(companion)} (quality={quality!r})")
 
     @staticmethod
     def parse_filter(filter_str: str) -> dict:

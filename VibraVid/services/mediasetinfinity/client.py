@@ -42,24 +42,24 @@ class MediasetAPI:
         self.app_name = self.get_app_name()
 
         # Check for token in login config
-        self.beToken = None
+        self.adminBeToken = None
         self.account_id = None
         self.is_anonymous = True
-        login_token = config_manager.login.get("mediasetinfinity", "beToken")
+        login_token = config_manager.login.get("mediasetinfinity", "adminBeToken")
 
         if login_token is not None and login_token != "":
             if _is_token_valid(login_token):
-                self.beToken = login_token
+                self.adminBeToken = login_token
                 self.account_id = _decode_jwt_payload(login_token).get("oid")
                 self.is_anonymous = False
-                console.print("[green]Authenticated with login beToken (sub)")
+                console.print("[green]Authenticated with login adminBeToken (sub)")
             else:
-                console.print("[yellow]Login beToken expired, falling back to anonymous token...")
-                self.beToken = self.generate_betoken()
-                self.account_id = _decode_jwt_payload(self.beToken).get("oid")
+                console.print("[yellow]Login adminBeToken expired, falling back to anonymous token...")
+                self.adminBeToken = self.generate_betoken()
+                self.account_id = _decode_jwt_payload(self.adminBeToken).get("oid")
         else:
-            self.beToken = self.generate_betoken()
-            self.account_id = _decode_jwt_payload(self.beToken).get("oid")
+            self.adminBeToken = self.generate_betoken()
+            self.account_id = _decode_jwt_payload(self.adminBeToken).get("oid")
 
         self.sha256Hash = self.getHash2c()
 
@@ -75,7 +75,7 @@ class MediasetAPI:
         return self.sha256Hash
 
     def getBearerToken(self):
-        return self.beToken
+        return self.adminBeToken
 
     def getAccountId(self):
         return self.account_id
@@ -115,7 +115,7 @@ class MediasetAPI:
 
     def generate_request_headers(self):
         return {
-            'authorization': self.beToken,
+            'authorization': self.adminBeToken,
             'user-agent': self.headers['user-agent'],
             'x-m-device-id': self.client_id,
             'x-m-platform': 'WEB',
@@ -130,7 +130,7 @@ def get_client():
     if class_mediaset_api is None:
         class_mediaset_api = MediasetAPI()
     elif not _is_token_valid(class_mediaset_api.getBearerToken()):
-        console.print("[yellow]beToken expired, re-authenticating...")
+        console.print("[yellow]adminBeToken expired, re-authenticating...")
         class_mediaset_api = MediasetAPI()
     return class_mediaset_api
 

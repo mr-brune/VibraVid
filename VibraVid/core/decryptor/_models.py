@@ -12,6 +12,8 @@ SCHEME_TO_MODE: dict[str, str] = {
     "cens": "ctr",
     "cbcs": "cbc",
     "cbc1": "cbc",
+    "fps":  "cbc",
+    "fps ": "cbc",
 }
 
 # Short codec-box identifier → human-readable name shown in logs/UI.

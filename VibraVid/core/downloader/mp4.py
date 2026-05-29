@@ -1,18 +1,16 @@
 # 09.06.24
 
 import gc
+import logging
 import os
 import signal
-import tempfile
-import time
-import logging
 import threading
+import time
 from contextlib import nullcontext
 from functools import partial
 from typing import Any, Optional
 
 from rich.console import Console
-from rich.prompt import Prompt
 from rich.progress import Progress, TextColumn
 
 from VibraVid.utils.http_client import create_client, get_userAgent
@@ -21,272 +19,18 @@ from VibraVid.cli.run import execute_hooks
 from VibraVid.core.ui.progress_bar import CustomBarColumn
 from VibraVid.core.ui.tracker import download_tracker, context_tracker
 from VibraVid.core.ui.bar_manager import DownloadBarManager
-from VibraVid.utils.vault.supa import supa_vault
-from VibraVid.core.decryptor import Decryptor, KeysManager
-from VibraVid.core.decryptor._mp4_inspector import parse_binary
-from VibraVid.core.drm.system import KNOWN_DRM_SYSTEMS
+
+from ._interrupt import InterruptHandler
+from ._drm_probe import DRMProbe
+from ._post_decrypt import PostDownloadDecryptor
+from ._supa_tracker import SupaTracker
 
 
-msg = Prompt()
 console = Console()
 logger = logging.getLogger(__name__)
 
 SKIP_DOWNLOAD = config_manager.config.get_bool('DOWNLOAD', 'skip_download')
 DELAY_SS = config_manager.config.get_int('DOWNLOAD',  'delay_after_download')
-PROBE_BYTES = 4 * 1024 * 1024  # 4 MB
-
-
-class InterruptHandler:
-    """
-    Tracks Ctrl-C presses and decides when to abort cleanly vs. force-quit.
-    """
-    def __init__(self) -> None:
-        self.interrupt_count:     int   = 0
-        self.last_interrupt_time: float = 0.0
-        self.kill_download:       bool  = False
-        self.force_quit:          bool  = False
-
-    def handle(self, signum, frame, original_handler) -> None:
-        """Signal callback — attach with ``partial(self.handle, original_handler=prev)``."""
-        now = time.time()
-        if now - self.last_interrupt_time > 2:
-            self.interrupt_count = 0
-
-        self.interrupt_count      += 1
-        self.last_interrupt_time   = now
-
-        if self.interrupt_count == 1:
-            self.kill_download = True
-            console.print("\n[yellow]First interrupt received. Download will complete and save. Press Ctrl+C three times quickly to force quit.")
-
-        elif self.interrupt_count >= 3:
-            self.force_quit = True
-            console.print("\n[red]Force quit activated. Saving partial download...")
-            signal.signal(signum, original_handler)
-
-
-
-class DRMProbe:
-    def __init__(self, known_systems: Optional[dict] = None) -> None:
-        self._systems: dict[str, str] = (known_systems if known_systems is not None else KNOWN_DRM_SYSTEMS)
-
-    def probe(self, url: str, headers: dict, client) -> tuple:
-        """
-        Returns ``(encrypted: bool, scheme: str | None, drm_names: list[str])``.
-        Never raises — all errors are caught and logged at DEBUG level.
-        """
-        try:
-            raw = self._fetch_bytes(url, headers, client)
-            if not raw:
-                return False, None, []
-
-            info = self._parse_bytes(raw)
-            if not info.encrypted:
-                logger.debug("DRMProbe: no encryption markers found in first 4 MB.")
-                return False, None, []
-
-            drm_names = self._resolve_drm_names(info.pssh_boxes)
-            self._report(info.scheme, info.kid, drm_names)
-            return True, info.scheme, drm_names
-
-        except Exception as exc:
-            logger.debug(f"DRMProbe failed (non-fatal): {exc}")
-            return False, None, []
-
-    def _fetch_bytes(self, url: str, headers: dict, client) -> Optional[bytes]:
-        probe_headers = {**headers, "Range": f"bytes=0-{PROBE_BYTES - 1}"}
-        resp = client.get(url, headers=probe_headers, timeout=15)
-
-        if resp.status_code not in (200, 206):
-            logger.debug(f"DRMProbe: unexpected status {resp.status_code} — skipping.")
-            return None
-        
-        raw = resp.content[:PROBE_BYTES]
-        return raw if raw else None
-
-    @staticmethod
-    def _parse_bytes(raw: bytes):
-        """Write *raw* to a temp file, run ``parse_binary``, then delete."""
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4probe") as tmp:
-            tmp.write(raw)
-            tmp_path = tmp.name
-        
-        try:
-            return parse_binary(tmp_path)
-        finally:
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-
-    def _resolve_drm_names(self, pssh_boxes: list) -> list:
-        known_names: list[str] = []
-        unknown_ids: list[str] = []
-        seen_known: set[str] = set()
-        seen_unknown: set[str] = set()
-
-        for box in pssh_boxes:
-            sid  = box.get("system_id", "").replace(" ", "").lower()
-            if not sid:
-                continue
-
-            name = self._systems.get(sid)
-            if name:
-                if name not in seen_known:
-                    seen_known.add(name)
-                    known_names.append(name)
-                continue
-
-            if sid not in seen_unknown:
-                seen_unknown.add(sid)
-                unknown_ids.append(sid)
-
-        if unknown_ids:
-            logger.debug(f"DRMProbe: unknown system_id(s): {', '.join(unknown_ids)}")
-
-        if known_names and unknown_ids:
-            return [*known_names, f"Unknown SID x{len(unknown_ids)}"]
-        if known_names:
-            return known_names
-        if unknown_ids:
-            return [f"Unknown ({sid[:8]}...)" for sid in unknown_ids]
-        return ["Unknown"]
-
-    @staticmethod
-    def _report(scheme: Optional[str], kid: Optional[str], drm_names: list) -> None:
-        label = ", ".join(drm_names) if drm_names else "unknown DRM"
-        logger.info(f"DRMProbe: encryption detected — scheme={scheme or 'unknown'}, kid={kid or 'n/a'}, DRM=[{label}]")
-        console.print(f"[cyan]Probe: [magenta]Encrypted [white]| [cyan]scheme: [magenta]{scheme or 'unknown'} [white]| [cyan]DRM: [magenta]{label}")
-
-
-class PostDownloadDecryptor:
-
-    @staticmethod
-    def has_keys(key: Any) -> bool:
-        """Return ``True`` when *key* contains at least one usable pair."""
-        if key is None:
-            return False
-        if isinstance(key, KeysManager):
-            return bool(key.get_keys_list())
-        if isinstance(key, str):
-            return bool(key.strip())
-        if isinstance(key, (list, tuple)):
-            return bool(key)
-        return False
-
-    def run(self, path: str, key: Any, download_id: Optional[str] = None) -> None:
-        """
-        Decrypt *path* in-place.  Logs and prints errors but never raises.
-        """
-        logger.info(f"PostDownloadDecryptor: probing {os.path.basename(path)} …")
-        if download_id:
-            download_tracker.update_status(download_id, "Decrypting ...")
-
-        dec_path = path + ".dec"
-        try:
-            decryptor = Decryptor()
-            mode, kid, *_rest = decryptor.detect_encryption(path)
-
-            if mode is None:
-                logger.info("PostDownloadDecryptor: file is not encrypted — skipping.")
-                console.print("[dim]Keys provided but file is not encrypted — skipping decryption.")
-                return
-
-            logger.info(f"PostDownloadDecryptor: encryption found (mode={mode}, kid={kid}) — starting decryption.")
-
-            if kid:
-                self._warn_if_kid_missing(kid, key)
-
-            ok = decryptor.decrypt(
-                encrypted_path=path,
-                keys=key,
-                output_path=dec_path,
-                stream_type="video",
-                progress_cb=None,
-            )
-
-            if ok and os.path.exists(dec_path) and os.path.getsize(dec_path) > 0:
-                try:
-                    os.replace(dec_path, path)
-                    logger.info(f"PostDownloadDecryptor: success → {os.path.basename(path)}")
-                except Exception as exc:
-                    logger.error(f"PostDownloadDecryptor: rename failed — {exc}")
-                    console.print(f"[red]Decryption rename failed: {exc}")
-                    self._remove(dec_path)
-            
-            else:
-                logger.error(f"PostDownloadDecryptor: decryption failed for {os.path.basename(path)}")
-                console.print(f"[red]Decryption failed for {os.path.basename(path)}")
-                self._remove(dec_path)
-
-        except Exception as exc:
-            logger.error(f"PostDownloadDecryptor: unexpected error — {exc}")
-            console.print(f"[red]Decryption error: {exc}")
-            self._remove(dec_path)
-
-    @staticmethod
-    def _remove(path: str) -> None:
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception:
-            pass
-
-    @staticmethod
-    def _warn_if_kid_missing(kid: str, key: Any) -> None:
-        """Emit a warning when the probed KID is not among the provided keys."""
-        kid_norm = kid.replace("-", "").lower()
-        found    = False
-
-        if isinstance(key, KeysManager):
-            found = any(
-                k.kid.replace("-", "").lower() == kid_norm
-                for k in (key.get_keys_list() or [])
-                if hasattr(k, "kid")
-            )
-
-        elif isinstance(key, str):
-            # Accepts "kid:key" or "kid:key|kid:key|..." formats
-            found = any(
-                pair.split(":")[0].replace("-", "").lower() == kid_norm
-                for pair in key.strip().split("|")
-                if ":" in pair
-            )
-
-        elif isinstance(key, (list, tuple)):
-            for pair in key:
-                raw = pair if isinstance(pair, str) else str(pair)
-                if raw.split(":")[0].replace("-", "").lower() == kid_norm:
-                    found = True
-                    break
-
-        if not found:
-            logger.warning(f"PostDownloadDecryptor: KID [{kid}] from probe not found among provided keys — decryption may fail.")
-            console.print(f"[yellow]Warning:[/yellow] KID [cyan]{kid}[/cyan] missing — decryption may fail.")
-
-
-class SupaTracker:
-    def fire(self, title: str, media_type: str, site: str) -> None:
-        try:
-            threading.Thread(target=self._run, args=(title, media_type, site), daemon=False).start()
-        except Exception:
-            logger.debug("SupaTracker: failed to start background thread (ignored)")
-
-    @staticmethod
-    def _run(title: str, media_type: str, site: str) -> None:
-        try:
-            if not supa_vault:
-                logger.warning("SupaTracker: supa_vault not initialized")
-                return
-            
-            title_str = "://generic"
-            media_type_str = (media_type or "").strip()
-            site_str = (site or "").strip().lower()
-            logger.info(f"SupaTracker: title={title_str} type={media_type_str} service={site_str}")
-            result = supa_vault.track_download(title_str, media_type_str, site_str)
-            logger.info(f"SupaTracker result: {result}")
-        except Exception as exc:
-            logger.error(f"SupaTracker error: {exc}", exc_info=True)
 
 
 class MP4FileDownloader:
@@ -344,10 +88,10 @@ class MP4FileDownloader:
         try:
             if not self._check_content_type(client, headers):
                 return None, False, None
-            
+
             self._run_drm_probe(client, headers)
             self._stream_to_disk(client, headers)
-        
+
         finally:
             client.close()
 
@@ -357,11 +101,11 @@ class MP4FileDownloader:
         if SKIP_DOWNLOAD:
             console.print("[yellow]Download skipped due to configuration.")
             return False
-        
+
         if os.path.exists(self.path):
             console.print("[yellow]File already exists.")
             return False
-        
+
         if not (self.url.lower().startswith("http://") or self.url.lower().startswith("https://")):
             logger.error(f"Invalid URL: {self.url}")
             console.print(f"[red]Invalid URL: {self.url}")
@@ -372,7 +116,7 @@ class MP4FileDownloader:
     def _start_gui_tracking(self) -> None:
         if not self.download_id:
             return
-        
+
         download_tracker.start_download(
             self.download_id,
             os.path.basename(self.path),
@@ -419,11 +163,11 @@ class MP4FileDownloader:
             logger.info(f"Body preview: {preview_text}")
         except Exception as exc:
             logger.error(f"Fallback GET failed: {exc}")
-        
+
         return False
 
     def _run_drm_probe(self, client, headers: dict) -> None:
-        logger.info(f"Probing first {PROBE_BYTES // (1024 * 1024)} MB for DRM/encryption markers")
+        logger.info("Probing first 4 MB for DRM/encryption markers")
         if self.download_id:
             download_tracker.update_status(self.download_id, "Probing ...")
 
@@ -475,7 +219,7 @@ class MP4FileDownloader:
     def _build_progress_ctx(self):
         if context_tracker.is_gui:
             return nullcontext()
-        
+
         return Progress(
             TextColumn(f"[yellow]{self.label}[/yellow] [cyan]Downloading[/cyan]: "),
             CustomBarColumn(),
@@ -503,7 +247,7 @@ class MP4FileDownloader:
         else:
             size_val, size_unit = "--", ""
             task_total = None
-        
+
         try:
             return progress_bars.add_task(
                 "download",
@@ -526,7 +270,7 @@ class MP4FileDownloader:
                     console.print("\n[red]Force quitting... Saving partial download.")
                     if self.download_id and download_tracker.is_stopped(self.download_id):
                         self._incomplete_err = "cancelled"
-                    
+
                     break
 
                 if chunk:
@@ -593,7 +337,6 @@ class MP4FileDownloader:
                 )
             except Exception:
                 pass
-
 
     def _finalise(self) -> tuple:
 
@@ -674,9 +417,10 @@ class MP4FileDownloader:
                 console.log(f"[yellow]Rename attempt {attempt + 1}/10 failed: {exc}")
                 time.sleep(0.5)
                 gc.collect()
-        
+
         console.print(f"[red]Could not rename temp file after 10 retries: {last_exc}")
         return False
+
 
 def MP4_Downloader(url: str, path: str, referer: Optional[str] = None, headers_: Optional[dict] = None, download_id: Optional[str] = None, site_name: Optional[str] = None, label: str = "MP4", key: Any = None, max_percentage: Optional[float] = None) -> tuple:
     """

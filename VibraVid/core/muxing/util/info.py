@@ -83,7 +83,7 @@ class Mediainfo:
                 hdr        = "/bt2020/" in stream_text,
                 dolby_vision = (
                     "dvhe" in base_info or "dvh1" in base_info or
-                    "DOVI" in base_info or "dvvideo" in stream_type or
+                    "DOVI" in base_info or "dvvideo" in base_info or
                     bool(p["dovi"].search(output) and stream_type == "Video")
                 ),
                 start_time = float(start_m.group(1)) if start_m else 0.0,

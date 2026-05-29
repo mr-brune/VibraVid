@@ -92,6 +92,7 @@ def run_with_progress(cmd: list, label: str, encrypted_path: str, output_path: s
             time.sleep(0.05)
 
     stderr_lines: list[str] = []
+    stdout_lines: list[str] = []
     try:
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,)
         process_holder["process"] = process
@@ -103,8 +104,14 @@ def run_with_progress(cmd: list, label: str, encrypted_path: str, output_path: s
             for line in process.stderr:
                 stderr_lines.append(line)
 
+        def _read_stdout() -> None:
+            for line in process.stdout:
+                stdout_lines.append(line)
+
         stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
         stderr_thread.start()
+        stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
+        stdout_thread.start()
 
         if progress_cb is None:
             console.print(f"{label} {_render_bar(0)}", end="\r")
@@ -128,6 +135,7 @@ def run_with_progress(cmd: list, label: str, encrypted_path: str, output_path: s
 
         process.wait()
         stderr_thread.join(timeout=2)
+        stdout_thread.join(timeout=2)
 
     except Exception as exc:
         stop_monitor.set()
@@ -147,4 +155,6 @@ def run_with_progress(cmd: list, label: str, encrypted_path: str, output_path: s
         return True
 
     stderr_text = "".join(stderr_lines).strip()
-    return False, stderr_text
+    stdout_text = "".join(stdout_lines).strip()
+    combined = (stderr_text + ("\n" + stdout_text if stdout_text else "")).strip()
+    return False, combined

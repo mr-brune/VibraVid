@@ -71,7 +71,7 @@ class Decryptor:
                 logger.error("No valid keys available for decryption")
                 return False
 
-            method_display = (mode or "unknown").upper()
+            method_display = (enc_method or mode or "unknown").upper().replace("_", "-")
             filename = os.path.basename(encrypted_path)
             use_shaka = bool((enc_method and "sample" in enc_method.lower()) or mode == "cbc")
 
@@ -137,7 +137,7 @@ class Decryptor:
         mode, kid, _pssh, _codec, _enc_method = self.detect_encryption(encrypted_path)
         norm_keys = resolve_fixed_key_if_needed(encrypted_path, kid, norm_keys)
 
-        method_display = (mode or "unknown").upper()
+        method_display = (_enc_method or mode or "unknown").upper().replace("_", "-")
         filename = os.path.basename(encrypted_path)
         rich_label = f"[bold cyan]Dec[/bold cyan] [green]{filename}[/green] [[magenta]{method_display}[/magenta]] - [yellow]Bento4[/yellow]"
 

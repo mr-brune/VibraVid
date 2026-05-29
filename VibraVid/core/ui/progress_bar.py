@@ -51,6 +51,15 @@ class CompactTimeRemainingColumn(ProgressColumn):
     def render(self, task):
         if not SHOW_ELAPSED_REMAINING:
             return Text("")
+        
+        # For live streams show content duration downloaded
+        if task.fields.get("segment", "").endswith("/~"):
+            duration = task.fields.get("duration", "")
+            if duration:
+                d = duration.split("/")[0] if "/" in duration else duration
+                return Text.from_markup(f"[green]{d}[/green]")
+            return Text.from_markup("[dim]--:--[/dim]")
+        
         remaining = task.time_remaining
         if remaining is None:
             return Text.from_markup("[cyan]--:--[/cyan]")

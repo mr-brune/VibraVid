@@ -85,35 +85,55 @@ class JumoClient:
         resp.raise_for_status()
         return resp.json()
 
-    def search(self, query: str, limit: int = 20) -> list[dict]:
+    def fetch_album(self, album_id: str) -> dict:
+        """Fetch full album metadata including all track items."""
+        return self._get("album", params={"album_id": album_id, "region": REGION})
+
+    def search(self, query: str, limit: int = 20, search_type: str = "track") -> list[dict]:
+        """
+        Search for tracks and/or albums.
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return per type
+            search_type: One of 'track', 'album', or 'both'
+        """
         data = self._get("search", params={"query": query, "offset": 0, "limit": limit, "region": REGION})
 
         tracks: list[dict] = []
         raw_tracks: list[dict] = []
+        raw_albums: list[dict] = []
 
-        if "tracks" in data and "items" in data["tracks"]:
-            raw_tracks = data["tracks"]["items"]
+        if search_type in ("track", "both"):
+            if "tracks" in data and "items" in data["tracks"]:
+                raw_tracks = data["tracks"]["items"]
 
-        elif "albums" in data and "items" in data["albums"]:
-            for album in data["albums"]["items"]:
-                raw_tracks.append({"_album_mode": True, "album": album})
+        if search_type in ("album", "both"):
+            if "albums" in data and "items" in data["albums"]:
+                raw_albums = data["albums"]["items"]
+
+        # Build album entries first so they appear grouped when search_type='both'
+        for album in raw_albums:
+            raw_tracks.append({"_album_mode": True, "album": album})
 
         for item in raw_tracks:
             if item.get("_album_mode"):
                 album = item["album"]
                 tracks.append({
-                    "id":        None,
-                    "title":     album.get("title", "—"),
-                    "artist":    album.get("artist", {}).get("name", "—"),
-                    "album":     album.get("title", "—"),
-                    "duration":  album.get("duration", 0),
-                    "explicit":  album.get("parental_warning", False),
-                    "cover":     album.get("image", {}).get("large", ""),
+                    "id": None,
+                    "album_id": album.get("id"),
+                    "title": album.get("title", "—"),
+                    "artist": album.get("artist", {}).get("name", "—"),
+                    "album": album.get("title", "—"),
+                    "tracks_count": album.get("tracks_count", 0),
+                    "duration": album.get("duration", 0),
+                    "explicit": album.get("parental_warning", False),
+                    "cover": album.get("image", {}).get("large", ""),
                     "track_num": None,
-                    "qobuz_id":  album.get("qobuz_id"),
-                    "year":      _extract_year(album),
-                    "genre":     _extract_genre(album),
-                    "_raw":      album,
+                    "qobuz_id": album.get("qobuz_id"),
+                    "year": _extract_year(album),
+                    "genre": _extract_genre(album),
+                    "_raw": album,
                 })
             
             else:

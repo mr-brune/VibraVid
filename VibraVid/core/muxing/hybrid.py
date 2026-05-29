@@ -1,15 +1,20 @@
 # 16.04.24
 
+import re
 import asyncio
 import logging
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from rich.console import Console
+
 from VibraVid.core.muxing.util.info import Mediainfo
 from VibraVid.core.muxing.helper.video import get_media_metadata
 from VibraVid.setup import get_dovi_tool_path, get_ffmpeg_path, get_ffprobe_path, get_mkvmerge_path
 from VibraVid.core.decryptor._subprocess_runner import run_with_progress
+
+console = Console()
 
 
 logger = logging.getLogger(__name__)
@@ -31,16 +36,46 @@ def _run_command(cmd: List[str], description: str) -> bool:
     return True
 
 
-def _run_progress_command(cmd: List[str], label: str, input_path: Path, output_path: Path) -> bool:
+def _run_progress_command(cmd: List[str], label: str, input_path: Path, output_path: Path, accept_warnings: bool = False) -> bool:
     result = run_with_progress(cmd, label, str(input_path), str(output_path))
     if isinstance(result, tuple):
-        return bool(result[0])
+        ok = bool(result[0])
+        stderr = result[1] if len(result) > 1 else ""
+        if not ok and accept_warnings and output_path.exists() and output_path.stat().st_size > 0:
+            if stderr:
+                logger.warning(f"{label} exited with warnings: {stderr[:800]}")
+            return True
+        if not ok and stderr:
+            logger.error(f"{label} failed: {stderr[:800]}")
+        return ok
     return bool(result)
 
 
 def _normalize_language(value: str) -> str:
-    normalized = (value or "und").strip().replace("_", "-")
-    return normalized or "und"
+    """Return a valid IETF BCP 47 language tag, stripping any non-standard suffixes"""
+    raw = (value or "und").strip().replace("_", "-")
+    if not raw:
+        return "und"
+    
+    parts = raw.split("-")
+    result: List[str] = []
+    for i, part in enumerate(parts):
+        if i == 0:
+            if re.match(r'^[a-zA-Z]{2,8}$', part):
+                result.append(part.lower())
+            else:
+                return "und"
+            
+        elif i == 1:
+            if re.match(r'^[a-zA-Z]{2}$', part):    # region: 2 letters (US, FR, …)
+                result.append(part.upper())
+            elif re.match(r'^[0-9]{3}$', part):     # numeric region: 3 digits (419, …)
+                result.append(part)
+            
+            # else: skip non-standard subtag (sdh, cc, forced, etc.) and stop
+            break
+
+    return "-".join(result) if result else "und"
 
 
 def _track_language(track: Dict[str, Any]) -> str:
@@ -107,19 +142,67 @@ def _to_annexb(input_path: Path, output_path: Path) -> bool:
     return _run_command(cmd, f"ffmpeg annexb {input_path.name}")
 
 
+def _to_annexb_hdr10(input_path: Path, output_path: Path) -> bool:
+    """Convert HDR10 MP4 to Annex-B patching VUI to BT.2020/PQ.
+
+    Streaming services often encode HEVC with bt709 in the VUI even for HDR10 content
+    (actual HDR metadata lives in SEI NALs). hevc_metadata BSF patches the VUI so
+    downstream tools (mkvmerge, ffprobe) read correct colour info from the bitstream."""
+    cmd = [
+        get_ffmpeg_path(),
+        "-y",
+        "-i", str(input_path),
+        "-c:v", "copy",
+        "-bsf:v", "hevc_mp4toannexb,hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9",
+        str(output_path),
+    ]
+    return _run_command(cmd, f"ffmpeg hdr10 annexb {input_path.name}")
+
+
+def _dv_mp4_to_annexb(input_path: Path, output_path: Path) -> bool:
+    """Convert a dvh1/dvhe MP4 to HEVC Annex-B in a single ffmpeg pass.
+
+    ffmpeg 6.1.x maps the dvh1/dvhe FourCC to codec ID dvvideo (24), which
+    hevc_mp4toannexb rejects. Forcing the input codec to hevc overrides this
+    mapping so the BSF runs correctly. RPU SEI NAL units are preserved."""
+    cmd = [
+        get_ffmpeg_path(),
+        "-y",
+        "-codec:v", "hevc",
+        "-i", str(input_path),
+        "-map", "0:v:0",
+        "-c:v", "copy",
+        "-bsf:v", "hevc_mp4toannexb",
+        str(output_path),
+    ]
+    return _run_command(cmd, f"ffmpeg dv annexb {input_path.name}")
+
+
+def _strip_enca(input_path: Path, output_path: Path) -> bool:
+    """Re-mux an audio track through ffmpeg to strip residual enca/encv wrapper boxes."""
+    cmd = [
+        get_ffmpeg_path(),
+        "-y",
+        "-i", str(input_path),
+        "-map", "0:a",
+        "-c:a", "copy",
+        str(output_path),
+    ]
+    return _run_command(cmd, f"ffmpeg strip-enca {input_path.name}")
+
+
 def _select_hybrid_video(video_track, other_videos):
     base_path = str(video_track.get("path") or "").strip()
     if not base_path:
         return None
 
-    base_probe = video_track.get("probe") or probe_media_file(base_path)
     other_list = list(other_videos)
+    if not other_list:
+        return None
 
-    # Case 1: base is DV and no other candidates, use it as is (e.g. DV-only source)
-    if base_probe.get("dolby_vision") and not other_list:
-        return video_track
+    base_probe = video_track.get("probe") or probe_media_file(base_path)
 
-    # Case 2: base is HDR10 and no other candidates, use it as is (e.g. HDR10-only source)
+    # Case A: base is HDR10, look for a DV companion track
     if base_probe.get("hdr") and not base_probe.get("dolby_vision"):
         for candidate in other_list:
             probe = candidate.get("probe") or probe_media_file(str(candidate.get("path", "")))
@@ -127,7 +210,7 @@ def _select_hybrid_video(video_track, other_videos):
             if probe.get("dolby_vision") or (candidate.get("tag") or "").lower() == "dv":
                 return candidate
 
-    # Case 3: base is DV but has HDR10 candidates, prefer a non-DV HDR10 candidate if available (e.g. mixed source)
+    # Case B: base is DV, look for an HDR10 companion track to inject RPU into
     if base_probe.get("dolby_vision"):
         for candidate in other_list:
             probe = candidate.get("probe") or probe_media_file(str(candidate.get("path", "")))
@@ -138,17 +221,16 @@ def _select_hybrid_video(video_track, other_videos):
             if "hdr" in tag:
                 return candidate
 
+    # Case C: probe-independent fallback — companion explicitly tagged "dv" and base is not DV.
+    if not base_probe.get("dolby_vision"):
+        for candidate in other_list:
+            if (candidate.get("tag") or "").lower() == "dv":
+                return candidate
+
     return None
 
 
-def build_hybrid_output(
-    video_track: Dict[str, Any],
-    other_videos: Iterable[Dict[str, Any]],
-    audio_tracks: List[Dict[str, Any]],
-    subtitle_tracks: List[Dict[str, Any]],
-    output_path: str,
-    filename_base: str,
-) -> Optional[str]:
+def build_hybrid_output(video_track: Dict[str, Any], other_videos: Iterable[Dict[str, Any]], audio_tracks: List[Dict[str, Any]], subtitle_tracks: List[Dict[str, Any]], output_path: str, filename_base: str) -> Optional[str]:
     """Build a hybrid DV + HDR10 output when the media probes match the script workflow."""
     if not video_track:
         return None
@@ -196,14 +278,29 @@ def build_hybrid_output(
     rpu_file = work_dir / f"{filename_base}_rpu.bin"
     hybrid_hevc = work_dir / f"{filename_base}_hybrid.hevc"
 
-    if selected_other is video_track:
-        if not _to_annexb(base_path, dv_hevc):
-            return None
-        base_hevc = dv_hevc
+    # Determine which of the two tracks is actually DV and which is HDR10,
+    base_probe = video_track.get("probe") or probe_media_file(base_path_str)
+    other_probe = selected_other.get("probe") or probe_media_file(dv_path_str)
+
+    if base_probe.get("dolby_vision") and not other_probe.get("dolby_vision"):
+        # base track is DV, other track is HDR10 → swap roles
+        actual_dv_path = base_path
+        actual_hdr_path = dv_path
+        logger.info("Hybrid: base=DV, other=HDR10 — extracting RPU from base, injecting into other")
     else:
-        if not _to_annexb(base_path, base_hevc):
+        # base track is HDR10, other track is DV (normal case)
+        actual_hdr_path = base_path
+        actual_dv_path = dv_path
+        logger.info("Hybrid: base=HDR10, other=DV — extracting RPU from other, injecting into base")
+
+    if not _to_annexb_hdr10(actual_hdr_path, base_hevc):
+        return None
+    dv_is_mp4 = actual_dv_path.suffix.lower() in (".mp4", ".m4v")
+    if dv_is_mp4:
+        if not _dv_mp4_to_annexb(actual_dv_path, dv_hevc):
             return None
-        if not _to_annexb(dv_path, dv_hevc):
+    else:
+        if not _to_annexb(actual_dv_path, dv_hevc):
             return None
 
     if not _run_command([dovi_tool, "extract-rpu", str(dv_hevc), "-o", str(rpu_file)], "dovi_tool extract-rpu"):
@@ -221,22 +318,51 @@ def build_hybrid_output(
         hybrid_hevc,
     ):
         return None
-    
+
+    if output_file.exists():
+        try:
+            output_file.unlink()
+        except OSError as exc:
+            logger.warning(f"Could not remove existing hybrid output {output_file}: {exc}")
+
+    valid_audio = [t for t in audio_tracks if Path(str(t.get("path") or "")).exists()]
+    valid_subs = [t for t in subtitle_tracks if Path(str(t.get("path") or "")).exists()]
+
+    if valid_audio:
+        console.print(f"[cyan]\nMerging [red]{len(valid_audio)}[/red] audio track(s)...")
+    if valid_subs:
+        console.print(f"[cyan]Merging [red]{len(valid_subs)}[/red] subtitle track(s)...")
+
     mux_cmd: List[str] = [
         mkvmerge, "-o", str(output_file),
+        "--colour-matrix", "0:9",
+        "--colour-primaries", "0:9",
+        "--colour-transfer-characteristics", "0:16",
+        "--colour-range", "0:1",
         "--language", "0:und",
         "--track-name", "0:Hybrid DV+HDR10",
         "--compression", "0:none",
         str(hybrid_hevc),
     ]
 
-    for track in audio_tracks:
+    for idx, track in enumerate(audio_tracks):
         track_path_str = str(track.get("path") or "").strip()
         if not track_path_str:
             continue
         track_path = Path(track_path_str)
         if not track_path.exists():
             continue
+
+        # Strip residual enca wrapper boxes left by live CENC segment decryption.
+        lang_token = _track_language(track).replace("-", "_")
+        clean_audio = work_dir / f"{filename_base}_aud{idx}_{lang_token}.mp4"
+        logger.info(f"Hybrid audio[{idx}] strip-enca: {track_path.name} → {clean_audio.name}")
+        if _strip_enca(track_path, clean_audio) and clean_audio.exists() and clean_audio.stat().st_size > 0:
+            logger.info(f"Hybrid audio[{idx}] strip-enca OK ({clean_audio.stat().st_size // 1024} KB)")
+            track_path = clean_audio
+        else:
+            logger.warning(f"Hybrid audio[{idx}] strip-enca failed — using original: {track_path.name}")
+
         mux_cmd.extend(
             [
                 "--language", f"0:{_track_language(track)}",
@@ -263,7 +389,7 @@ def build_hybrid_output(
         )
 
     mkv_label = f"[cyan]Mux[/cyan] [green]{output_file.name}[/green] - [yellow]MKVMerge[/yellow]"
-    if not _run_progress_command(mux_cmd, mkv_label, hybrid_hevc, output_file):
+    if not _run_progress_command(mux_cmd, mkv_label, hybrid_hevc, output_file, accept_warnings=True):
         return None
 
     if not output_file.exists() or output_file.stat().st_size <= 0:

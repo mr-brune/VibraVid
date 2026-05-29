@@ -412,7 +412,8 @@ def join_audios(video_path: str, audio_tracks: List[Dict[str, str]], out_path: s
 
     if not audio_tracks:
         logger.warning("join_audios: no valid audio tracks remaining after duration check.")
-        return join_video(video_path, out_path), False, None
+        merged_only, mv_result = join_video(video_path, out_path)
+        return merged_only, False, mv_result
 
     # Check duration differences and log info/warnings
     for audio_track in audio_tracks:

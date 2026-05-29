@@ -21,6 +21,7 @@ hls_process =  HLS_Downloader(
     m3u8_url="",
     headers={},
     output_path=fr".\Video\Prova.{conf_extension}",
+    key=None
 )
 
 

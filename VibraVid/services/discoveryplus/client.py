@@ -141,13 +141,13 @@ class DiscoveryPlus:
         data = response.json()
         
         # Extract manifest and license
-        manifest = (
-            data.get('fallback', {}).get('manifest', {}).get('url', '').replace('_fallback', '')
-            or data.get('manifest', {}).get('url')
-        )
+        main_manifest = data.get('manifest', {}).get('url')
+        fallback_manifest = data.get('fallback', {}).get('manifest', {}).get('url', '').replace('_fallback', '')
+        manifest = main_manifest or fallback_manifest
+
         license_url = (
-            data.get('fallback', {}).get('drm', {}).get('schemes', {}).get('playready', {}).get('licenseUrl')
-            or data.get('drm', {}).get('schemes', {}).get('playready', {}).get('licenseUrl')
+            data.get('drm', {}).get('schemes', {}).get('playready', {}).get('licenseUrl')
+            or data.get('fallback', {}).get('drm', {}).get('schemes', {}).get('playready', {}).get('licenseUrl')
         )
 
         return {

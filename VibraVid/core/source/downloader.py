@@ -46,7 +46,7 @@ REQUEST_TIMEOUT = config_manager.config.get_int("REQUESTS",  "timeout")
 
 
 class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
-    def __init__(self, url: str, output_dir: str, filename: str, headers: Optional[Dict] = None, key: Optional[Any] = None, cookies: Optional[Dict] = None, download_id: Optional[str] = None, site_name: Optional[str] = None, max_segments: Optional[int] = None) -> None:
+    def __init__(self, url: str, output_dir: str, filename: str, headers: Optional[Dict] = None, key: Optional[Any] = None, cookies: Optional[Dict] = None, download_id: Optional[str] = None, site_name: Optional[str] = None, max_segments: Optional[int] = None, max_time: Optional[float] = None) -> None:
         super().__init__(
             url=url,
             output_dir=output_dir,
@@ -58,6 +58,7 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
             site_name=site_name,
         )
         self.max_segments = max_segments
+        self.max_time = max_time
 
         # Cancellation
         self._stop_event: threading.Event = threading.Event()
@@ -244,14 +245,30 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
     def _stop_check(self) -> bool:
         return self._stop_event.is_set() or bool(self.download_id and download_tracker.is_stopped(self.download_id))
 
+    def _apply_max_time(self, dl_segs: List[Dict]) -> List[Dict]:
+        if not self.max_time or self.max_time <= 0:
+            return dl_segs
+        acc = 0.0
+        result = []
+        for seg in dl_segs:
+            result.append(seg)
+            if seg.get("seg_type") == "init":
+                continue
+            acc += seg.get("duration", 0.0)
+            if acc >= self.max_time:
+                break
+        if len(result) < len(dl_segs):
+            logger.info(f"Limiting download to {acc:.1f}s of content (max_time={self.max_time:.0f}s)")
+        return result
+
     def _stream_task_key(self, stream) -> str:
         if stream.type == "video":
             return self._video_task_key
-        
+
         if stream.type == "subtitle":
             lang = (stream.resolved_language or stream.language or "und").lower()
-            return f"sub_{lang.split('-')[0]}"
-        
+            return f"sub_{lang.split('-')[0]}{self._sub_discriminator(stream)}"
+
         lang = (stream.resolved_language or stream.language or "und").lower()
         return f"aud_{lang.split('-')[0]}"
 
@@ -259,10 +276,11 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
         if stream.type == "video":
             name = f"v_{safe_name(stream.resolution or 'unknown')}"
         elif stream.type == "subtitle":
-            name = f"s_{safe_name((stream.language or 'und').lower())}"
+            lang = safe_name((stream.language or "und").lower())
+            name = f"s_{lang}{self._sub_discriminator(stream)}"
         else:
             name = f"a_{safe_name((stream.language or 'und').lower())}"
-        
+
         d = self._tmp_dir / name
         d.mkdir(parents=True, exist_ok=True)
         return d
@@ -344,6 +362,7 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
             dl_segs = dl_segs[:1 + self.max_segments] if init_url else dl_segs[:self.max_segments]
             logger.info(f"Limiting HLS download to {len(dl_segs)} segments (max_segments={self.max_segments})")
 
+        dl_segs = self._apply_max_time(dl_segs)
         self._download_stream_generic(dl_segs, stream, "hls", "ts", bar_manager, live_decryption=live_decryption)
 
     def _download_dash_stream(self, stream, bar_manager: DownloadBarManager, live_decryption: bool = False) -> None:
@@ -398,6 +417,7 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
             dl_segs = dl_segs[:self.max_segments]
             logger.info(f"Limiting DASH download to {len(dl_segs)} segments (max_segments={self.max_segments})")
 
+        dl_segs = self._apply_max_time(dl_segs)
         self._download_stream_generic(dl_segs, stream, "dash", "mp4", bar_manager, live_decryption=live_decryption)
 
     def _download_ism_stream(self, stream, bar_manager: DownloadBarManager) -> None:
@@ -458,6 +478,8 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
         if self.max_segments and self.max_segments > 0:
             dl_segs = dl_segs[:self.max_segments]
             logger.info(f"Limiting ISM download to {len(dl_segs)} segments (max_segments={self.max_segments})")
+
+        dl_segs = self._apply_max_time(dl_segs)
 
         # Force live_decryption=False → no per-segment decrypt worker
         self._download_stream_generic(dl_segs, stream, "ism", "mp4", bar_manager, live_decryption=False)
@@ -798,7 +820,8 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
                     decrypt_queue.task_done()
 
         needs_hls_decrypt = protocol_lower == "hls" and any(str((seg.get("enc") or {}).get("method") or "NONE").upper() == "AES-128" for seg in dl_segs)
-        needs_dash_live = protocol_lower == "dash" and live_decryption and bool(self.key)
+        _stream_is_encrypted = stream.drm is not None and stream.drm.is_encrypted()
+        needs_dash_live = protocol_lower == "dash" and live_decryption and bool(self.key) and _stream_is_encrypted
 
         if needs_hls_decrypt or needs_dash_live:
             logger.info(f'{protocol.upper()} decrypt worker started ({"AES-128" if needs_hls_decrypt else "live DASH"})')
@@ -934,9 +957,10 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
                 plan_label = self._audio_labels.get((stream.language or "und").lower(), "")
 
             elif stream and stream.type == "subtitle":
-                lang_raw  = (stream.language or "und").lower()
-                task_lang = lang_raw.split("-")[0]
-                plan_label = (self._sub_labels.get(lang_raw) or self._sub_labels.get(task_lang) or "")
+                plan_label = self._sub_labels_by_task_key.get(plan_task_key, "")
+                if not plan_label:
+                    lang_raw  = (stream.language or "und").lower()
+                    plan_label = self._sub_labels.get(lang_raw) or self._sub_labels.get(lang_raw.split("-")[0]) or ""
 
             else:
                 plan_label = ""
@@ -1016,13 +1040,25 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
         lang = re.sub(r"[^\w\-]", "_", (stream.language or "und").lower())
         if stream.type == "subtitle":
             if getattr(stream, "is_wvtt_mp4", False):
-                return f"{self.filename}.{lang}.wvtt"
-            
-            sub_ext = (stream.format or ext or "vtt").lower().strip()
-            if sub_ext in ("dash", "mp4", "m4s", ""):
-                sub_ext = "vtt"
+                base = f"{self.filename}.{lang}.wvtt"
+            else:
+                sub_ext = (stream.format or ext or "vtt").lower().strip()
+                if sub_ext in ("dash", "mp4", "m4s", ""):
+                    sub_ext = "vtt"
+                base = f"{self.filename}.{lang}.{sub_ext}"
 
-            return f"{self.filename}.{lang}.{sub_ext}"
+            with self._assigned_sub_lock:
+                if base not in self._assigned_sub_names:
+                    self._assigned_sub_names.add(base)
+                    return base
+                counter = 2
+                while True:
+                    stem, _, ext_part = base.rpartition(".")
+                    candidate = f"{stem}_{counter}.{ext_part}"
+                    if candidate not in self._assigned_sub_names:
+                        self._assigned_sub_names.add(candidate)
+                        return candidate
+                    counter += 1
         
         audio_ext = "webm" if ext == "webm" else "m4a"
         return f"{self.filename}.{lang}.{audio_ext}"

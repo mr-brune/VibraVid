@@ -54,9 +54,26 @@ def split_other_tracks(other_tracks: Optional[List[Dict[str, Any]]]) -> tuple[Li
     return video_tracks, audio_tracks, subtitle_tracks
 
 
-def _kind_to_filters(kind: str, tag: str) -> Dict[str, str]:
-    # backend needs to keep the main media stream enabled to produce an output.
-    return {"video": "best", "audio": "false", "subtitle": "false"}
+def _kind_to_filters(_kind: str, _tag: str, quality: str = "worst") -> Dict[str, str]:
+    if _tag == "dv":
+        # Constrain to actual DV-codec streams (dvh1/dvhe prefix) so that "worst" cannot
+        # accidentally pick a lower-bitrate H.265 PQ stream from the same manifest.
+        q = (quality or "worst").strip().lower()
+        if q in ("best", "worst"):
+            video_filter = f"codecs=dvh:for={q}"
+        elif re.match(r"^\d+$", q):
+            video_filter = f"res={q}:codecs=dvh:for=worst"
+        elif "|" in q:
+            res_part, _, fallback = q.partition("|")
+            if re.match(r"^\d+$", res_part.strip()):
+                fallback = fallback.strip() or "worst"
+                video_filter = f"res={res_part.strip()}:codecs=dvh:for={fallback}"
+            else:
+                video_filter = quality
+        else:
+            video_filter = quality
+        return {"video": video_filter, "audio": "false", "subtitle": "false"}
+    return {"video": quality or "worst", "audio": "false", "subtitle": "false"}
 
 
 def _track_label(track: Dict[str, Any], kind: str, tag: str) -> str:
@@ -97,6 +114,7 @@ def download_other_tracks(
     headers: Optional[Dict[str, str]] = None,
     cookies: Optional[Dict[str, str]] = None,
     max_segments: Optional[int] = None,
+    show_progress: bool = True,
 ) -> List[Dict[str, Any]]:
     """Download extra video/audio/subtitle tracks with the manual backend.
 
@@ -143,11 +161,30 @@ def download_other_tracks(
             site_name=None,
             max_segments=max_segments,
         )
-        downloader.custom_filters = _kind_to_filters(kind, tag)
+        quality = str(track.get("quality") or "worst").strip() or "worst"
+        downloader.custom_filters = _kind_to_filters(kind, tag, quality)
 
         try:
             downloader.parse_stream(show_table=False)
-            result = downloader.start_download(show_progress=True)
+            if kind == "video" and tag:
+                # Set resolution to the tag label so _prepare_labels shows "Vid DV"
+                tag_up = _safe_token(tag, tag).upper()
+                for s in downloader.streams:
+                    if s.selected and s.type == "video" and not s.is_external:
+                        s.resolution = tag_up
+                        break
+            
+            elif kind == "audio":
+                lang = track.get("language") or tag or "und"
+                
+                # computes "Aud en" instead of "Vid main".
+                for s in downloader.streams:
+                    if s.selected and s.type == "video" and not s.is_external:
+                        s.type = "audio"
+                        if lang and lang != "und":
+                            s.language = lang
+            
+            result = downloader.start_download(show_progress=show_progress)
         except Exception as exc:
             logger.error(f"Other track download failed ({label}): {exc}", exc_info=True)
             continue

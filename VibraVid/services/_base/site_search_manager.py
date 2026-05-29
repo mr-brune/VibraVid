@@ -159,6 +159,7 @@ def get_select_title(table_show_manager, media_search_manager):
             logger.error("Non-numeric input received.")
 
 def base_process_search_result(select_title: Optional[Entries], download_film_func: Optional[Callable[[Entries], Any]] = None, download_series_func: Optional[Callable[[Entries, Optional[str], Optional[str], Optional[Any]], Any]] = None,
+    download_live_func: Optional[Callable[[Entries], Any]] = None,
     media_search_manager: Optional[EntriesManager] = None, table_show_manager: Optional[TVShowManager] = None, selections: Optional[Dict[str, str]] = None, scrape_serie: Optional[Any] = None
 ) -> bool:
     """
@@ -168,6 +169,7 @@ def base_process_search_result(select_title: Optional[Entries], download_film_fu
         select_title (Entries): The selected media item. Can be None if selection fails.
         download_film_func (callable, optional): Function to download a film
         download_series_func (callable, optional): Function to download a series
+        download_live_func (callable, optional): Function to download a live event
         media_search_manager (EntriesManager, optional): Manager to clear after processing
         table_show_manager (TVShowManager, optional): Manager to clear after processing
         selections (dict, optional): Dictionary containing selection inputs that bypass manual input
@@ -279,6 +281,21 @@ def base_process_search_result(select_title: Optional[Entries], download_film_fu
  
         return True
     
+    # Handle live events
+    elif str(select_title.type).lower() == 'live':
+        if not download_live_func:
+            console.print("[red]Error: download_live_func not provided for live events")
+            logger.error("download_live_func not provided for live events")
+            return False
+
+        download_live_func(select_title)
+        logger.info(f"Initiating download for live event: {select_title}")
+
+        if table_show_manager:
+            table_show_manager.clear()
+
+        return True
+
     else:
         console.print(f"[red]Unknown media type: {select_title.type}")
         logger.error(f"Unknown media type: {select_title.type}")

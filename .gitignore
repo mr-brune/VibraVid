@@ -58,3 +58,5 @@ Conf/config.json.backup
 !/.cache/arr
 !/.cache/arr/.gitkeep
 .claude
+/.claude
+CLAUDE.md

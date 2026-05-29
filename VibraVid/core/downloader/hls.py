@@ -9,6 +9,7 @@ from rich.console import Console
 
 from VibraVid.utils import config_manager, os_manager
 from VibraVid.utils.http_client import get_headers
+from VibraVid.core.source.download_utils import parse_max_time as _parse_max_time
 from VibraVid.core.muxing.helper.video_hybrid import split_other_tracks
 from VibraVid.core.ui.tracker import download_tracker, context_tracker
 from VibraVid.core.utils.media_players import MediaPlayers
@@ -33,7 +34,7 @@ class HLS_Downloader(BaseDownloader):
     def __init__(self, m3u8_url: str, headers: Optional[Dict[str, str]] = None,
         license_url: Optional[str] = None, license_headers: Optional[Dict[str, str]] = None, license_certificate: Optional[str] = None,
         output_path: Optional[str] = None, drm_preference = _DRMSystems.WIDEVINE, key: Optional[str] = None,
-        cookies: Optional[Dict[str, str]] = None, max_segments: Optional[int] = None,
+        cookies: Optional[Dict[str, str]] = None, max_segments: Optional[int] = None, max_time=None,
         other_tracks: Optional[list] = None,
     ):
         """
@@ -47,6 +48,7 @@ class HLS_Downloader(BaseDownloader):
             - key: Manual decryption key (hex format) if known.
             - cookies: HTTP cookies for authenticated requests.
             - max_segments: Maximum number of segments to download (for testing). Default: None (all).
+            - max_time: Maximum content duration to download, e.g. "01:00:00" or 3600 seconds. Default: None (all).
         """
         self.m3u8_url = self._resolve_url(str(m3u8_url).strip())
         self.headers = headers or get_headers()
@@ -57,8 +59,9 @@ class HLS_Downloader(BaseDownloader):
         self.key = key
         self.cookies = cookies or {}
         self.max_segments = max_segments
+        self.max_time = _parse_max_time(max_time)
         self.other_tracks = other_tracks or []
-        logger.info(f"Initialized HLS_Downloader with URL: {self.m3u8_url}, License URL: {self.license_url}, DRM Pref: {self.drm_preference}, Max Segments: {self.max_segments}")
+        logger.info(f"Initialized HLS_Downloader with URL: {self.m3u8_url}, License URL: {self.license_url}, DRM Pref: {self.drm_preference}, Max Segments: {self.max_segments}, Max Time: {self.max_time}")
 
         self.drm_manager = DRMManager(
             get_wvd_path(),
@@ -220,11 +223,16 @@ class HLS_Downloader(BaseDownloader):
             download_id=self.download_id,
             site_name=self.site_name,
             max_segments=self.max_segments,
+            max_time=self.max_time,
         )
         self.media_downloader.other_tracks = self.other_tracks
-        _, _, other_subtitles = split_other_tracks(self.other_tracks)
+        other_videos, other_audios, other_subtitles = split_other_tracks(self.other_tracks)
+
         if other_subtitles:
             self.media_downloader.external_subtitles = other_subtitles
+        
+        if other_videos or other_audios:
+            self.media_downloader.external_other_tracks = other_videos + other_audios
 
         if self.download_id:
             download_tracker.update_status(self.download_id, "Parsing HLS ...")

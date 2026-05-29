@@ -3,6 +3,7 @@
 import re
 import logging
 import platform
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -113,6 +114,7 @@ class BaseMediaDownloader:
 
         self.external_subtitles: list = []
         self.external_audios: list = []
+        self.external_other_tracks: list = []
         self.other_tracks: list = []
         self.custom_filters: Optional[Dict] = None
         self.license_url: Optional[str] = None
@@ -125,7 +127,12 @@ class BaseMediaDownloader:
         self._audio_labels: Dict[str, str] = {}
         self._audio_task_keys: List[Tuple[str, str]] = []
         self._sub_labels: Dict[str, str] = {}
+        self._sub_labels_by_task_key: Dict[str, str] = {}
         self._sub_task_keys: List[Tuple[str, str]] = []
+
+        # Thread-safe output filename collision tracking (subtitle streams)
+        self._assigned_sub_names: set = set()
+        self._assigned_sub_lock = threading.Lock()
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._tmp_dir = self.output_dir
@@ -208,6 +215,32 @@ class BaseMediaDownloader:
             fake.id = "EXT"
             self.streams.append(fake)
 
+        for ext in self.external_other_tracks:
+            raw_type = (ext.get("type") or "").strip().lower()
+            kind = raw_type.split(":")[0] if ":" in raw_type else raw_type
+            tag = raw_type.split(":")[1] if ":" in raw_type else ""
+            if kind not in ("video", "audio"):
+                continue
+
+            lang = ext.get("language", "") or ""
+            if lang == "und":
+                lang = ""
+
+            fake = Stream(
+                type=kind, language=lang, name=ext.get("name", ""),
+                selected=True, is_external=True,
+            )
+
+            fake.id = "EXT"
+            if kind == "video" and tag:
+                tag_up = tag.upper()
+                if tag_up == "DV":
+                    fake.video_range = "DV"
+                elif tag_up in ("HDR10", "HDR10PLUS", "HDR10+", "HDR"):
+                    fake.video_range = "HDR10+"
+            
+            self.streams.append(fake)
+
         if show_table and self.streams:
             console = Console(force_terminal=True if platform.system().lower() != "windows" else None)
             console.print(build_table(self.streams))
@@ -232,10 +265,15 @@ class BaseMediaDownloader:
         self._sv, self._sa, self._ss = selector.apply(self.streams)
         logger.info(f"Selection -> video={self._sv!r}  audio={self._sa!r}  subtitle={self._ss!r}")
 
+    def _effective_filter(self, track_type: str) -> str:
+        """Return the active selection filter for *track_type*, preferring custom_filters over config."""
+        cf_key = "subtitle" if track_type == "subtitle" else "audio"
+        cfg_key = "select_subtitle" if track_type == "subtitle" else "select_audio"
+        return (self.custom_filters or {}).get(cf_key) or config_manager.config.get("DOWNLOAD", cfg_key) or ""
+
     def _ext_lang_matches(self, lang: str, track_type: str) -> bool:
         """Return True if the external track with *lang* tag should be downloaded."""
-        cfg_key = "select_subtitle" if track_type == "subtitle" else "select_audio"
-        cfg = config_manager.config.get("DOWNLOAD", cfg_key)
+        cfg = self._effective_filter(track_type)
         if not cfg or cfg.lower() == "all":
             return True
         if cfg.lower() == "false":
@@ -259,8 +297,7 @@ class BaseMediaDownloader:
         Return True if *track* (a full external track dict with flag fields)
         matches the configured selection filter, including flag requirements.
         """
-        cfg_key = "select_subtitle" if track_type == "subtitle" else "select_audio"
-        cfg = config_manager.config.get("DOWNLOAD", cfg_key)
+        cfg = self._effective_filter(track_type)
         if not cfg or cfg.lower() == "all":
             return True
         if cfg.lower() == "false":
@@ -362,18 +399,18 @@ class BaseMediaDownloader:
             self._audio_task_keys.append((task_lang, label))
 
         self._sub_labels = {}
+        self._sub_labels_by_task_key = {}
         self._sub_task_keys = []
         seen_sub_keys: Set[str] = set()
- 
+
         for s in sel_subs:
             label = self._sub_stream_label(s)
             raw = (s.language or "und").lower()
- 
-            # task_key mirrors _stream_task_key() in downloader.py:
-            #   f"sub_{lang.split('-')[0]}"
+
+            # task_key mirrors _stream_task_key() in downloader.py
             task_lang = raw.split("-")[0]
-            task_key  = f"sub_{task_lang}"
- 
+            task_key  = f"sub_{task_lang}{self._sub_discriminator(s)}"
+
             name = (s.name or "").strip()
             if name:
                 self._sub_labels[f"{raw}:{tmdb_client._slugify(name)}"] = label
@@ -381,11 +418,25 @@ class BaseMediaDownloader:
 
             # Also store under base lang so "en-us" lookup finds the "en" entry
             self._sub_labels.setdefault(task_lang, label)
+
+            # Per-task_key label lookup (used by _run_dl for correct per-stream label)
+            self._sub_labels_by_task_key[task_key] = label
+
             if task_key not in seen_sub_keys:
                 seen_sub_keys.add(task_key)
                 self._sub_task_keys.append((task_key, label))
 
         logger.info(f"Labels ready -- video={self._video_label!r} audio={list(self._audio_labels)[:4]}  subs={list(self._sub_labels)[:4]}")
+
+    @staticmethod
+    def _sub_discriminator(stream) -> str:
+        if getattr(stream, "forced", False):
+            return "_forced"
+        if getattr(stream, "is_sdh", False):
+            return "_sdh"
+        if getattr(stream, "is_cc", False):
+            return "_cc"
+        return ""
 
     @staticmethod
     def _sub_stream_label(s: "Stream") -> str:

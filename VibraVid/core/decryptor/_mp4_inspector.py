@@ -127,6 +127,13 @@ def parse_json_dump(text: Optional[str]) -> EncryptionInfo:
 
     if pssh_boxes or tenc_boxes or sinf_boxes or saio_boxes or saiz_boxes:
         info.encrypted = True
+
+    # Apple FairPlay SAMPLE-AES: codec box stays hvc1/avc1 but contains a 4snf child.
+    if not info.encrypted and _find_boxes_by_name(data, "4snf"):
+        info.encrypted = True
+        info.scheme = "fps"
+        info.encryption_method = "SAMPLE_AES"
+
     info.pssh_boxes = pssh_boxes
     return info
 
@@ -189,6 +196,12 @@ def parse_text_dump(text: Optional[str]) -> EncryptionInfo:
             info.encrypted = True
             break
 
+    # Apple FairPlay SAMPLE-AES
+    if not info.encrypted and re.search(r"\[4snf\]", normalized, re.IGNORECASE):
+        info.encrypted = True
+        info.scheme = "fps"
+        info.encryption_method = "SAMPLE_AES"
+
     return info
 
 
@@ -207,6 +220,11 @@ def parse_binary(file_path: str) -> EncryptionInfo:
                 info.scheme    = marker.decode()
                 info.encrypted = True
                 break
+
+        if not info.encrypted and (b"4snf" in data or b"fps " in data):
+            info.scheme = "fps"
+            info.encryption_method = "SAMPLE_AES"
+            info.encrypted = True
 
         # Try to read the scheme from a proper 'schm' box.
         schm = b"schm"
