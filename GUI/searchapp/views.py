@@ -13,7 +13,7 @@ import zipfile
 import shutil
 import importlib
 import concurrent.futures
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from django.shortcuts import render, redirect
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -154,10 +154,11 @@ def _same_series(title: str, series_base: str) -> bool:
     return _extract_series_base_title(title).casefold() == series_base.casefold()
 
 
-def _get_scheduled_downloads() -> List[Dict[str, Any]]:
+def _get_scheduled_downloads(exclude_ids: Optional[set] = None) -> List[Dict[str, Any]]:
+    exclude_ids = exclude_ids or set()
     with scheduled_downloads_lock:
         return sorted(
-            list(scheduled_downloads.values()),
+            (item for item in scheduled_downloads.values() if item.get("id") not in exclude_ids),
             key=lambda item: item.get("scheduled_at", 0),
         )
 
@@ -672,6 +673,13 @@ def _handle_series_download(request: HttpRequest) -> HttpResponse:
                     )
 
                 for download_id, season_num in planned_seasons:
+                    if _is_scheduled_cancelled(download_id):
+                        _remove_scheduled_download(download_id)
+                        continue
+
+                    # Respect the concurrency limit: acquire a slot per season and
+                    # release it before moving on, so other queued downloads can run.
+                    _acquire_download_slot()
                     try:
                         if _is_scheduled_cancelled(download_id):
                             _remove_scheduled_download(download_id)
@@ -687,7 +695,7 @@ def _handle_series_download(request: HttpRequest) -> HttpResponse:
                     except Exception as e:
                         error_msg = str(e) or "Errore sconosciuto"
                         print(f"[Error] Download season {season_num}: {e}")
-                        
+
                         try:
                             _remove_scheduled_download(download_id)
                             if download_id not in download_tracker.downloads:
@@ -696,6 +704,8 @@ def _handle_series_download(request: HttpRequest) -> HttpResponse:
                             download_tracker.complete_download(download_id, success=False, error=error_msg)
                         except Exception as tracker_err:
                             print(f"[Error] Failed to update download tracker: {tracker_err}")
+                    finally:
+                        _release_download_slot()
 
             except Exception as e:
                 print(f"[Error] Full series download task: {e}")
@@ -750,6 +760,13 @@ def _handle_series_download(request: HttpRequest) -> HttpResponse:
                     )
 
                 for download_id, season_num in planned_seasons:
+                    if _is_scheduled_cancelled(download_id):
+                        _remove_scheduled_download(download_id)
+                        continue
+
+                    # Respect the concurrency limit: acquire a slot per season and
+                    # release it before moving on, so other queued downloads can run.
+                    _acquire_download_slot()
                     try:
                         if _is_scheduled_cancelled(download_id):
                             _remove_scheduled_download(download_id)
@@ -765,7 +782,7 @@ def _handle_series_download(request: HttpRequest) -> HttpResponse:
                     except Exception as e:
                         error_msg = str(e) or "Errore sconosciuto"
                         print(f"[Error] Download season {season_num}: {e}")
-                        
+
                         try:
                             _remove_scheduled_download(download_id)
                             if download_id not in download_tracker.downloads:
@@ -774,6 +791,8 @@ def _handle_series_download(request: HttpRequest) -> HttpResponse:
                             download_tracker.complete_download(download_id, success=False, error=error_msg)
                         except Exception as tracker_err:
                             print(f"[Error] Failed to update download tracker: {tracker_err}")
+                    finally:
+                        _release_download_slot()
 
             except Exception as e:
                 print(f"[Error] Selected seasons download task: {e}")
@@ -816,11 +835,14 @@ def download_dashboard(request: HttpRequest) -> HttpResponse:
     active_downloads = _enrich_active_downloads_with_series(download_tracker.get_active_downloads())
     history = download_tracker.get_history()
     _prune_scheduled_downloads(active_downloads, history)
-    scheduled = _get_scheduled_downloads()
     
+    # Hide entries that are already running so they don't show in both sections.
+    active_ids = {d.get("id") for d in active_downloads if d.get("id")}
+    scheduled = _get_scheduled_downloads(exclude_ids=active_ids)
+
     return render(
-        request, 
-        "searchapp/downloads.html", 
+        request,
+        "searchapp/downloads.html",
         {
             "active_downloads": active_downloads,
             "scheduled_downloads": scheduled,
@@ -836,8 +858,10 @@ def get_downloads_json(request: HttpRequest) -> JsonResponse:
     active_downloads = _enrich_active_downloads_with_series(download_tracker.get_active_downloads())
     history = download_tracker.get_history()
     _prune_scheduled_downloads(active_downloads, history)
-    scheduled = _get_scheduled_downloads()
-    
+    # Hide entries that are already running so they don't show in both sections.
+    active_ids = {d.get("id") for d in active_downloads if d.get("id")}
+    scheduled = _get_scheduled_downloads(exclude_ids=active_ids)
+
     return JsonResponse({
         "active": active_downloads,
         "scheduled": scheduled,
@@ -1488,7 +1512,16 @@ def save_settings(request: HttpRequest) -> JsonResponse:
         with open(file_path, 'w', encoding='utf-8') as f:
             formatted = json.dumps(json.loads(content), indent=4, ensure_ascii=False)
             f.write(formatted)
-        
+
+        # Apply the download concurrency limit immediately, without a restart.
+        if file_type == 'config':
+            try:
+                new_cfg = json.loads(content)
+                slots = int(new_cfg.get("ARR", {}).get("max_concurrent_downloads", 1) or 1)
+                set_max_download_slots(slots)
+            except Exception as exc:
+                print(f"[Downloads] Failed to apply max concurrent slots: {exc}")
+
         return JsonResponse({
             "success": True,
             "message": f"{file_type}.json salvato con successo"

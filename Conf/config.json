@@ -83,7 +83,7 @@
         "enable_radarr_webhook": false,
         "polling_interval": 300,
         "full_resync_interval": 21600,
-        "max_concurrent_downloads": 1,
+        "max_concurrent_downloads": 2,
         "webhook_priority_enabled": true,
         "native_webhook_priority_window_seconds": 120,
         "seerr_fallback_delay_seconds": 20,
