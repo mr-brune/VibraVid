@@ -13,7 +13,7 @@ from VibraVid.setup import binary_paths, get_ffmpeg_path, get_mkvmerge_path
 from VibraVid.core.ui.tracker import context_tracker
 from VibraVid.core.utils.language import resolve_iso639_2
 
-from .helper.video import detect_ts_timestamp_issues, convert_ts_to_mp4, resolve_compatible_extension
+from .helper.video import detect_ts_timestamp_issues, convert_ts_to_mp4, resolve_compatible_extension, is_mpegts_file
 from .helper.audio import check_duration_v_a, has_audio, get_video_duration
 from .helper.sub import convert_subtitle, extract_vtt_from_wvtt_mp4
 from .capture import capture_ffmpeg_real_time
@@ -324,7 +324,7 @@ def join_video(video_path: str, out_path: str):
         logger.info("[join_video] Detected timestamp issues, adding -fflags +genpts")
         ffmpeg_cmd.extend(['-fflags', '+genpts+igndts+discardcorrupt', '-avoid_negative_ts', 'make_zero'])
 
-    if video_path.lower().endswith('.ts'):
+    if is_mpegts_file(video_path):
         ffmpeg_cmd.extend(['-f', 'mpegts'])
 
     ffmpeg_cmd.extend(['-i', video_path])
@@ -436,12 +436,12 @@ def join_audios(video_path: str, audio_tracks: List[Dict[str, str]], out_path: s
     if USE_GPU:
         ffmpeg_cmd.extend(['-hwaccel', detect_gpu_device_type()])
     
-    if video_path.lower().endswith('.ts'):
+    if is_mpegts_file(video_path):
         ffmpeg_cmd.extend(['-f', 'mpegts'])
     ffmpeg_cmd.extend(['-i', video_path])
 
     for audio_track in audio_tracks:
-        if audio_track.get('path', '').lower().endswith('.ts'):
+        if is_mpegts_file(audio_track.get('path', '')):
             ffmpeg_cmd.extend(['-f', 'mpegts'])
         ffmpeg_cmd.extend(['-i', audio_track.get('path')])
 
@@ -585,6 +585,9 @@ def join_subtitles(video_path: str, subtitles_list: List[Dict[str, str]], out_pa
     else:
         subtitle_codec = "copy"
 
+    if is_mpegts_file(video_path):
+        ffmpeg_cmd += ["-f", "mpegts"]
+    
     ffmpeg_cmd += ["-i", video_path]
     for subtitle in subtitles_list:
         ffmpeg_cmd += ["-i", subtitle["path"]]

@@ -46,7 +46,7 @@ REQUEST_TIMEOUT = config_manager.config.get_int("REQUESTS",  "timeout")
 
 
 class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
-    def __init__(self, url: str, output_dir: str, filename: str, headers: Optional[Dict] = None, key: Optional[Any] = None, cookies: Optional[Dict] = None, download_id: Optional[str] = None, site_name: Optional[str] = None, max_segments: Optional[int] = None, max_time: Optional[float] = None) -> None:
+    def __init__(self, url: str, output_dir: str, filename: str, headers: Optional[Dict] = None, key: Optional[Any] = None, cookies: Optional[Dict] = None, download_id: Optional[str] = None, site_name: Optional[str] = None, max_segments: Optional[int] = None, max_time: Optional[float] = None, manifest_content: Optional[str] = None, manifest_protocol: Optional[str] = None) -> None:
         super().__init__(
             url=url,
             output_dir=output_dir,
@@ -56,6 +56,8 @@ class MediaDownloader(LiveDownloadMixin, BaseMediaDownloader):
             cookies=cookies,
             download_id=download_id,
             site_name=site_name,
+            manifest_content=manifest_content,
+            manifest_protocol=manifest_protocol,
         )
         self.max_segments = max_segments
         self.max_time = max_time

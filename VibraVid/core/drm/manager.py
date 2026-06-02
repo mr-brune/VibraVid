@@ -202,7 +202,7 @@ class DRMManager:
         else:
             console.print("[yellow]CDM extraction disabled by config.")
 
-    def get_wv_keys(self, pssh_list: list[dict], license_url: str, license_data: dict = None, license_certificate: str = None, headers: dict = None, key: str = None):
+    def get_wv_keys(self, pssh_list: list[dict], license_url: str, license_data: dict = None, license_certificate: str = None, headers: dict = None, key: str = None, license_request_fn=None):
         """
         Get Widevine keys.
         """
@@ -217,6 +217,7 @@ class DRMManager:
                 license_data=license_data,
                 license_certificate=license_certificate,
                 prefer_remote_cdm=self.prefer_remote_cdm,
+                license_request_fn=license_request_fn,
             ),
             key=key,
         )
@@ -278,7 +279,6 @@ class DRMManager:
             try:
                 added = vdb.set_keys(valid_keys, drm_type, base_license_url, pssh, kid_to_label)
                 results[name] = added
-                console.print(f"[green]✓ {name}[/green]: {added} key(s) stored")
             except Exception as e:
                 logger.error(f"[add_keys] Failed to store to {name}: {e}")
                 console.print(f"[red]✗ {name}: {e}")

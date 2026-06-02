@@ -1,11 +1,12 @@
 # 2.03.26
 
 import os
-import json
 import re
+import json
 import shutil
 import logging
 import threading
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -15,6 +16,9 @@ from VibraVid.utils import config_manager, os_manager
 from VibraVid.core.ui.tracker import download_tracker, context_tracker
 from VibraVid.core.muxing import join_video, join_audios, join_subtitles, build_hybrid_output, probe_media_file
 from VibraVid.core.muxing.helper.video import get_media_metadata
+from VibraVid.core.muxing.helper.audio import audio_ext_for_codec
+from VibraVid.setup import get_ffmpeg_path
+
 from VibraVid.core.muxing.helper.video_hybrid import download_other_tracks
 from VibraVid.cli.run import execute_hooks
 
@@ -402,7 +406,8 @@ class BaseDownloader:
         self.last_merge_result = result_json
         if os.path.exists(merged_file):
             return merged_file
-        
+
+        logger.error(f"Audio merge failed (ffmpeg exit_code={(result_json or {}).get('exit_code')}); output not created: {merged_file}")
         console.print("[yellow]Audio merge failed, continuing with video only")
         return current_file
 
@@ -461,7 +466,6 @@ class BaseDownloader:
         
         output_dir = os.path.dirname(self.output_path)
         filename_base = os.path.splitext(os.path.basename(self.output_path))[0]
-        console.print("[cyan]Copying subtitles to final path...")
         for sub_info in self.copied_subtitles:
             dst = os.path.join(
                 output_dir,
@@ -480,10 +484,10 @@ class BaseDownloader:
         
         output_dir = os.path.dirname(self.output_path)
         filename_base = os.path.splitext(os.path.basename(self.output_path))[0]
-        console.print("[cyan]Copying audios to final path...")
         for idx, audio_info in enumerate(self.copied_audios):
             if self.audio_only and idx == 0:
-                dst = self.output_path
+                dst = self._audio_only_destination(audio_info["src"])
+                self.output_path = dst
                 move_func = shutil.move
             else:
                 dst = os.path.join(
@@ -493,9 +497,48 @@ class BaseDownloader:
                 move_func = shutil.copy2
 
             try:
-                move_func(audio_info["src"], dst)
+                if move_func is shutil.move and dst != audio_info["src"] and self._remux_needed(audio_info["src"], dst):
+                    self._remux_audio(audio_info["src"], dst)
+                else:
+                    move_func(audio_info["src"], dst)
             except Exception as e:
                 console.print(f"[yellow]Warning: Could not move audio {audio_info['language']}: {e}")
+
+    def _audio_only_destination(self, src: str) -> str:
+        """Determine the destination path for an audio-only download, using codec-based extension if possible."""
+        base_no_ext = os.path.splitext(self.output_path)[0]
+        try:
+            codec = (get_media_metadata(src) or {}).get("audio_codec", "")
+        except Exception:
+            codec = ""
+        ext = audio_ext_for_codec(codec) or os.path.splitext(src)[1].lstrip(".") or "mka"
+        return f"{base_no_ext}.{ext}"
+
+    @staticmethod
+    def _remux_needed(src: str, dst: str) -> bool:
+        """True if the source and destination extensions differ, indicating that remuxing is needed to change container format."""
+        return os.path.splitext(src)[1].lower() != os.path.splitext(dst)[1].lower()
+
+    def _remux_audio(self, src: str, dst: str) -> None:
+        """Remux audio to change container without re-encoding, using FFmpeg. Falls back to raw move on failure."""
+        try:
+            proc = subprocess.run([
+                    get_ffmpeg_path(), "-y", "-hide_banner", "-loglevel", "error",
+                    "-i", src,
+                    "-c:a", "copy", 
+                    dst
+                ],
+                capture_output=True, text=True,
+            )
+            
+            if proc.returncode == 0 and os.path.exists(dst):
+                os.remove(src)
+                return
+            
+            logger.warning(f"Audio remux failed ({proc.returncode}): {proc.stderr[-200:]}; falling back to raw move")
+        except Exception as e:
+            logger.warning(f"Audio remux error: {e}; falling back to raw move")
+        shutil.move(src, os.path.splitext(dst)[0] + os.path.splitext(src)[1])
 
     def _finalize(self, *, final_file: str) -> None:
         """Common tail for start(): move to final location."""

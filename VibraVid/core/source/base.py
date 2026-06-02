@@ -91,11 +91,13 @@ def lang_variants(normalized_lang: str) -> Set[str]:
 
 
 class BaseMediaDownloader:
-    def __init__(self, url: str, output_dir: str, filename: str, headers: Optional[Dict] = None, key: Optional[Any] = None, cookies: Optional[Dict] = None, download_id: Optional[str] = None, site_name: Optional[str] = None) -> None:
+    def __init__(self, url: str, output_dir: str, filename: str, headers: Optional[Dict] = None, key: Optional[Any] = None, cookies: Optional[Dict] = None, download_id: Optional[str] = None, site_name: Optional[str] = None, manifest_content: Optional[str] = None, manifest_protocol: Optional[str] = None) -> None:
         self.url = url
         self.output_dir = Path(output_dir)
         self.filename = filename
         self.headers = headers or {}
+        self.manifest_content = manifest_content
+        self.manifest_protocol = (manifest_protocol or "").lower() or None
         self.key = key
         self.cookies = cookies or {}
         self.download_id = download_id
@@ -158,18 +160,26 @@ class BaseMediaDownloader:
             download_tracker.update_status(self.download_id, "Parsing ...")
 
         url_lower = self.url.lower().split("?")[0]
-        logger.info(f"Parsing manifest: {self.url!r}  auto_select={auto_select}  headers={bool(self.headers)}")
-        parser = None
+        proto = self.manifest_protocol
+        content = self.manifest_content
+        logger.info(f"Initial manifest info -- url={self.url!r}  protocol={proto!r}  content={'present' if content else 'none'}")
 
-        if url_lower.endswith((".mpd", ".mpp")):
-            logger.info("Processing URL ending with .mpd or .mpp -- treating as DASH")
-            parser = DashParser(self.url, self.headers)
+        if content and proto:
+            effective = proto
+        elif url_lower.endswith((".mpd", ".mpp")):
+            effective = "dash"
         elif url_lower.endswith(".ism") or url_lower.endswith(".ism/manifest"):
-            logger.info("Processing URL ending with .ism or .ism/manifest -- treating as ISM")
-            parser = ISMParser(self.url, self.headers)
+            effective = "ism"
         else:
-            logger.info("Processing URL not ending with .mpd, .mpp, or .ism/manifest -- treating as HLS")
-            parser = HLSParser(self.url, self.headers)
+            effective = proto or "hls"
+
+        logger.info(f"Parsing manifest: {self.url!r}  auto_select={auto_select}  headers={bool(self.headers)}  protocol={effective}  injected={bool(content)}")
+        if effective == "dash":
+            parser = DashParser(self.url, self.headers, content=content)
+        elif effective == "ism":
+            parser = ISMParser(self.url, self.headers, content=content)
+        else:
+            parser = HLSParser(self.url, self.headers, content=content)
 
         if not parser.fetch_manifest():
             logger.error("BaseMediaDownloader: manifest fetch failed")

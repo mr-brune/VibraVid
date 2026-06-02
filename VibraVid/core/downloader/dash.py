@@ -4,7 +4,7 @@ import os
 import shutil
 import time
 import logging
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from rich.console import Console
 
@@ -163,13 +163,16 @@ class DASH_Downloader(BaseDownloader):
     def __init__(self, mpd_url: Optional[str] = None, mpd_headers: Optional[Dict[str, str]] = None,
         license_url: Optional[str] = None, license_headers: Optional[Dict[str, str]] = None, license_certificate: Optional[str] = None, license_data: Optional[str] = None,
         output_path: Optional[str] = None, drm_preference = DRMType.WIDEVINE, key: Optional[str] = None, cookies: Optional[Dict[str, str]] = None,
-        max_segments: Optional[int] = None, max_time=None, other_tracks: Optional[list] = None,
+        max_segments: Optional[int] = None, max_time=None, other_tracks: Optional[list] = None, mpd_content: Optional[str] = None,
+        license_request_fn: Optional[Callable[[bytes], bytes]] = None,
     ):
         """
         Parameters:
             - mpd_url: DASH MPD manifest URL.
+            - mpd_content: Content of the MPD manifest already downloaded (string). If provided, skips the HTTP fetch.
             - mpd_headers: HTTP headers for MPD requests.
             - license_url: DRM license server URL for Widevine/PlayReady.
+            - license_request_fn: Optional callback (challenge bytes -> license bytes) for services whose license endpoint is a custom signed API call instead of a plain POST.
             - license_headers: HTTP headers for DRM license requests.
             - license_certificate: Widevine certificate (base64) for license challenge.
             - license_data: PlayReady license data for SOAP envelope.
@@ -180,6 +183,7 @@ class DASH_Downloader(BaseDownloader):
             - max_time: Maximum content duration to download, e.g. "01:00:00" or 3600 seconds. Default: None (all).
         """
         self.mpd_url = self._resolve_url(str(mpd_url).strip()) if mpd_url else None
+        self.mpd_content = mpd_content
         self.mpd_headers = mpd_headers or get_headers()
         self.other_tracks = [dict(track or {}) for track in (other_tracks or [])]
 
@@ -198,6 +202,7 @@ class DASH_Downloader(BaseDownloader):
             self._merge_other_tracks.append(track)
 
         self.license_url = str(license_url).strip() if license_url else None
+        self.license_request_fn = license_request_fn
         self.license_headers = license_headers
         self.license_certificate = license_certificate
         self.license_data = license_data
@@ -273,27 +278,31 @@ class DASH_Downloader(BaseDownloader):
                 if not kids:
                     kids = ["N/A"]
 
-                pssh = drm.get_pssh_for(dt)
+                # A manifest may expose several PSSH variants for one DRM type (e.g. a
+                # standard KID box plus a vendor-specific one); emit each so the key
+                # extractor can try them until a KID is covered.
+                psshs = drm.get_all_pssh_for(dt) or ([drm.get_pssh_for(dt)] if drm.get_pssh_for(dt) else [])
 
-                if not pssh:
+                if not psshs:
                     logger.warning("No PSSH found for this stream's DRM, skipping...")
                     continue
 
-                for kid in kids:
-                    dedup_key = (pssh, kid)
-                    if dedup_key in seen[dt]:
-                        continue
+                for pssh in psshs:
+                    for kid in kids:
+                        dedup_key = (pssh, kid)
+                        if dedup_key in seen[dt]:
+                            continue
 
-                    seen[dt].add(dedup_key)
-                    logger.info(f"  → PSSH added for {dt}: KID={kid}")
-                    result[dt].append(
-                        {
-                            "pssh": pssh,
-                            "kid": kid,
-                            "type": "Widevine" if dt == DRMType.WIDEVINE else "PlayReady",
-                            "label": label,
-                        }
-                    )
+                        seen[dt].add(dedup_key)
+                        logger.info(f"  → PSSH added for {dt}: KID={kid}")
+                        result[dt].append(
+                            {
+                                "pssh": pssh,
+                                "kid": kid,
+                                "type": "Widevine" if dt == DRMType.WIDEVINE else "PlayReady",
+                                "label": label,
+                            }
+                        )
 
         return result
 
@@ -344,7 +353,7 @@ class DASH_Downloader(BaseDownloader):
         keys = None
 
         if self.drm_preference == DRMType.WIDEVINE and drm_psshs.get(DRMType.WIDEVINE):
-            keys = self.drm_manager.get_wv_keys(drm_psshs[DRMType.WIDEVINE], self.license_url, self.license_data, self.license_certificate, self.license_headers, self.key)
+            keys = self.drm_manager.get_wv_keys(drm_psshs[DRMType.WIDEVINE], self.license_url, self.license_data, self.license_certificate, self.license_headers, self.key, license_request_fn=self.license_request_fn)
 
         if self.drm_preference == DRMType.PLAYREADY and drm_psshs.get(DRMType.PLAYREADY):
             keys = self.drm_manager.get_pr_keys(drm_psshs[DRMType.PLAYREADY], self.license_url, self.license_headers, self.key, self.license_data)
@@ -394,6 +403,7 @@ class DASH_Downloader(BaseDownloader):
                 license_certificate=self.license_certificate,
                 headers=eff_hdrs,
                 key=self.key,
+                license_request_fn=self.license_request_fn,
             )
         
         elif self.drm_preference == DRMType.PLAYREADY and drm_psshs.get(DRMType.PLAYREADY):
@@ -538,6 +548,8 @@ class DASH_Downloader(BaseDownloader):
             site_name=self.site_name,
             max_segments=self.max_segments,
             max_time=self.max_time,
+            manifest_content=self.mpd_content,
+            manifest_protocol="dash",
         )
         self.media_downloader.other_tracks = self._merge_other_tracks
         self.media_downloader.license_url = self.license_url

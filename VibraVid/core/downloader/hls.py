@@ -35,11 +35,12 @@ class HLS_Downloader(BaseDownloader):
         license_url: Optional[str] = None, license_headers: Optional[Dict[str, str]] = None, license_certificate: Optional[str] = None,
         output_path: Optional[str] = None, drm_preference = _DRMSystems.WIDEVINE, key: Optional[str] = None,
         cookies: Optional[Dict[str, str]] = None, max_segments: Optional[int] = None, max_time=None,
-        other_tracks: Optional[list] = None,
+        other_tracks: Optional[list] = None, m3u8_content: Optional[str] = None,
     ):
         """
         Parameters:
             - m3u8_url: M3U8 manifest URL to download.
+            - m3u8_content: Content of the M3U8 manifest already downloaded (string). If provided, skips the HTTP fetch.
             - headers: HTTP headers for requests (auth, user-agent, etc).
             - license_url: DRM license server URL for Widevine/PlayReady.
             - license_headers: HTTP headers for DRM license requests.
@@ -51,6 +52,7 @@ class HLS_Downloader(BaseDownloader):
             - max_time: Maximum content duration to download, e.g. "01:00:00" or 3600 seconds. Default: None (all).
         """
         self.m3u8_url = self._resolve_url(str(m3u8_url).strip())
+        self.m3u8_content = m3u8_content
         self.headers = headers or get_headers()
         self.license_url = str(license_url).strip() if license_url else None
         self.license_headers = license_headers or self.headers
@@ -224,6 +226,8 @@ class HLS_Downloader(BaseDownloader):
             site_name=self.site_name,
             max_segments=self.max_segments,
             max_time=self.max_time,
+            manifest_content=self.m3u8_content,
+            manifest_protocol="hls",
         )
         self.media_downloader.other_tracks = self.other_tracks
         other_videos, other_audios, other_subtitles = split_other_tracks(self.other_tracks)

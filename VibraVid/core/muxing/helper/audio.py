@@ -24,6 +24,7 @@ from VibraVid.core.muxing.capture import capture_ffmpeg_real_time
 console = Console()
 logger = logging.getLogger(__name__)
 ffmpeg_params = config_manager.config.get_list("PROCESS", "param_song_ffmpeg", default=None)
+
 _CODEC_TO_EXT: dict[str, str] = {
     'aac':        'm4a',
     'libmp3lame': 'mp3',
@@ -32,6 +33,33 @@ _CODEC_TO_EXT: dict[str, str] = {
     'libvorbis':  'ogg',
     'alac':       'm4a',
 }
+
+_AUDIO_CODEC_EXT = {
+    "flac": "flac",
+    "alac": "m4a", 
+    "aac": "m4a", 
+    "mp4a": "m4a", 
+    "aac_latm": "m4a",
+    "ac3": "ac3", 
+    "ac-3": "ac3",
+    "eac3": "eac3", 
+    "ec-3": "eac3",
+    "opus": "opus",
+    "vorbis": "ogg",
+    "mp3": "mp3", 
+    "mp3float": "mp3",
+    "dts": "dts", 
+    "dca": "dts",
+    "pcm_s16le": "wav", 
+    "pcm_s24le": "wav",
+}
+
+
+def audio_ext_for_codec(codec: str) -> Optional[str]:
+    """Mappa un codec audio (es. 'flac') all'estensione container nativa ('flac')."""
+    if not codec:
+        return None
+    return _AUDIO_CODEC_EXT.get(codec.strip().lower())
 
 
 def has_audio(file_path: str) -> bool:
@@ -175,7 +203,9 @@ def _tag_flac(path: Path, title: str, artist: str, album: str, year: str, track_
 def _tag_mp4(path: Path, title: str, artist: str, album: str, year: str, track_number: Optional[int], genre: str, cover_url: Optional[str]) -> None:
     """Write atom tags + cover art to an M4A/MP4/AAC file."""
     audio = MP4(str(path))
-    tags = audio.tags or {}
+    if audio.tags is None:
+        audio.add_tags()
+    tags = audio.tags
 
     tags['\xa9nam'] = [title]
     tags['\xa9ART'] = [artist]
@@ -197,7 +227,6 @@ def _tag_mp4(path: Path, title: str, artist: str, album: str, year: str, track_n
         else:
             logger.warning("Cover download returned empty bytes (MP4)")
 
-    audio.tags = tags
     audio.save()
 
 

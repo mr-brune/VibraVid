@@ -36,11 +36,12 @@ class ISM_Downloader(BaseDownloader):
         headers: Optional[Dict[str, str]] = None, license_url: Optional[str] = None, license_headers: Optional[Dict[str, str]] = None, license_certificate: Optional[str] = None,
         output_path: Optional[str] = None, drm_preference = DRMType.PLAYREADY, key: Optional[str] = None, cookies: Optional[Dict[str, str]] = None,
         max_segments: Optional[int] = None, max_time=None,
-        other_tracks: Optional[list] = None,
+        other_tracks: Optional[list] = None, ism_content: Optional[str] = None,
     ):
         """
         Parameters:
             - ism_url: URL to the ISM manifest (ending with .ism or .ism/manifest).
+            - ism_content: Content of the ISM manifest already downloaded (string). If provided, skips the HTTP fetch.
             - headers: HTTP headers for fetching the ISM manifest.
             - license_url: URL of the license server for DRM key acquisition.
             - license_headers: HTTP headers for license requests (defaults to *headers*).
@@ -52,6 +53,7 @@ class ISM_Downloader(BaseDownloader):
             - max_time: Maximum content duration to download, e.g. "01:00:00" or 3600 seconds. Default: None (all).
         """
         self.ism_url = self._resolve_url(str(ism_url).strip())
+        self.ism_content = ism_content
         self.headers = headers or get_headers()
         self.license_url = str(license_url).strip() if license_url else None
         self.license_headers = license_headers or self.headers
@@ -220,6 +222,8 @@ class ISM_Downloader(BaseDownloader):
             site_name=self.site_name,
             max_segments=self.max_segments,
             max_time=self.max_time,
+            manifest_content=self.ism_content,
+            manifest_protocol="ism",
         )
         self.media_downloader.other_tracks = self.other_tracks
 

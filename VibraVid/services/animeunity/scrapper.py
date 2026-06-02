@@ -59,7 +59,7 @@ class ScrapeSerieAnime:
             initial_count = response.json()["episodes_count"]
             
             all_episodes = []
-            start_range = 1
+            start_range = 0
             
             # Fetch episodes in chunks
             while start_range <= initial_count:

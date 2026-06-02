@@ -225,7 +225,7 @@ def convert_ttml_to_format(ttml_path: str, output_path: Optional[str] = None, ta
         elif target_format == 'vtt':
             sanitize_vtt_file(output_path)
 
-        console.print(f"[yellow]    - [green]Converted TTML to {target_format.upper()}: [red]{os.path.basename(output_path)}")
+        logger.info(f"convert_ttml_to_format: Successfully converted {os.path.basename(ttml_path)} to {target_format.upper()} with {len(ttml_blocks)} TTML blocks processed")
         return True
 
     except Exception as e:

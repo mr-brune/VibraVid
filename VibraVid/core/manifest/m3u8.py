@@ -65,7 +65,7 @@ def _infer_video_range_from_codecs(codecs: str) -> str:
 
 
 class HLSParser:
-    def __init__(self, m3u8_url: str, headers: Dict[str, str] = None, content: str = None):
+    def __init__(self, m3u8_url: str, headers: Dict[str, str] = None, content: Optional[str] = None):
         self.m3u8_url = m3u8_url
         self.headers = headers or {}
         self._injected = content

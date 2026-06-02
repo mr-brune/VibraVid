@@ -184,6 +184,23 @@ def resolve_compatible_extension(file_path: str, desired_ext: str) -> str:
     return 'mp4'
 
 
+def is_mpegts_file(file_path: str) -> bool:
+    """
+    Detect whether a file is raw MPEG-TS by its packet sync bytes
+    
+    Returns:
+        bool: True if the first two packet boundaries carry the 0x47 sync byte.
+    """
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(189)
+    except OSError as e:
+        logger.warning(f"is_mpegts_file: could not read {file_path}: {e}")
+        return False
+
+    return len(head) >= 189 and head[0] == 0x47 and head[188] == 0x47
+
+
 def detect_ts_timestamp_issues(file_path):
     """
     Detect if a TS file has timestamp issues by checking for unset timestamps.

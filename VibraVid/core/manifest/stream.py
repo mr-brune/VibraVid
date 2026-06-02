@@ -26,7 +26,13 @@ class DRMInfo:
         self.default_kids: List[str] = []
         self.method = None
         self._pssh_by_type: Dict[str, str] = {}
+        self._all_pssh_by_type: Dict[str, List[str]] = {}
         self._drm_types: List[str] = []
+
+    def _record_pssh(self, drm_type: str, pssh_base64: str) -> None:
+        bucket = self._all_pssh_by_type.setdefault(drm_type, [])
+        if pssh_base64 not in bucket:
+            bucket.append(pssh_base64)
 
     def set_pssh(self, pssh_base64: str, drm_type_hint: str = None) -> None:
         detected: Optional[str] = None
@@ -35,6 +41,7 @@ class DRMInfo:
         if isinstance(pssh_base64, str) and pssh_base64.lower().startswith("skd:"):
             detected = (drm_type_hint or DRMType.FAIRPLAY).upper()
             self._pssh_by_type[detected] = pssh_base64
+            self._record_pssh(detected, pssh_base64)
             if detected not in self._drm_types:
                 self._drm_types.append(detected)
             self.pssh = pssh_base64
@@ -111,9 +118,10 @@ class DRMInfo:
                 detected = DRMType.UNKNOWN
 
         self._pssh_by_type[detected] = pssh_base64
+        self._record_pssh(detected, pssh_base64)
         if detected not in self._drm_types:
             self._drm_types.append(detected)
-        
+
         for pref in (DRMType.WIDEVINE, DRMType.PLAYREADY, DRMType.FAIRPLAY, DRMType.UNKNOWN):
             if pref in self._pssh_by_type:
                 self.pssh = self._pssh_by_type[pref]
@@ -122,6 +130,10 @@ class DRMInfo:
 
     def get_pssh_for(self, drm_type: str) -> Optional[str]:
         return self._pssh_by_type.get(drm_type.upper())
+
+    def get_all_pssh_for(self, drm_type: str) -> List[str]:
+        """All distinct PSSH variants for *drm_type*, in document order (may be empty)."""
+        return list(self._all_pssh_by_type.get(drm_type.upper(), []))
 
     def get_all_drm_types(self) -> List[str]:
         return list(self._drm_types)

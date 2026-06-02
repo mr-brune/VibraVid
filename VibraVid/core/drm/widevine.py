@@ -3,6 +3,7 @@
 import json
 import base64
 import logging
+from typing import Callable, Optional
 
 from rich.console import Console
 from pywidevine.cdm import Cdm
@@ -20,7 +21,7 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
-def get_widevine_keys(pssh_list: list[dict], license_url: str, cdm_device_path: str = None, cdm_remote_api: list[str] = None, headers: dict = None, key: str = None, license_data: dict = None, license_certificate: str = None, prefer_remote_cdm: bool = True):
+def get_widevine_keys(pssh_list: list[dict], license_url: str, cdm_device_path: str = None, cdm_remote_api: list[str] = None, headers: dict = None, key: str = None, license_data: dict = None, license_certificate: str = None, prefer_remote_cdm: bool = True, license_request_fn: Optional[Callable[[bytes], bytes]] = None):
     """
     Extract Widevine CONTENT keys (KID/KEY) from a license.
 
@@ -34,6 +35,10 @@ def get_widevine_keys(pssh_list: list[dict], license_url: str, cdm_device_path: 
         - license_data (dict): Optional pre-fetched license data.
         - license_certificate (str): Optional base64-encoded SignedMessage for CDM Privacy Mode. If None or empty, set_service_certificate is not called.
         - prefer_remote_cdm (bool): Prefer remote CDM over local. If True and remote config missing, raises error instead of fallback.
+        - license_request_fn (Callable[[bytes], bytes]): Optional callback that takes the raw
+          challenge bytes and returns the raw license bytes. When provided, the built-in HTTP
+          POST to license_url is bypassed — used by services whose license endpoint is a custom
+          signed API call rather than a plain POST (e.g. Amazon Music).
 
     Returns:
         list: List of strings "KID:KEY" (only CONTENT keys) or None if error.
@@ -75,10 +80,10 @@ def get_widevine_keys(pssh_list: list[dict], license_url: str, cdm_device_path: 
         )
         return None
 
-    return _get_widevine_keys(pssh_list, license_url, cdm_device_path, cdm_remote_api, headers, license_data, license_certificate)
+    return _get_widevine_keys(pssh_list, license_url, cdm_device_path, cdm_remote_api, headers, license_data, license_certificate, license_request_fn)
 
 
-def _get_widevine_keys(pssh_list: list[dict], license_url: str, cdm_device_path: str, cdm_remote_api: list[str], headers: dict = None, license_data: dict = None, license_certificate: str = None):
+def _get_widevine_keys(pssh_list: list[dict], license_url: str, cdm_device_path: str, cdm_remote_api: list[str], headers: dict = None, license_data: dict = None, license_certificate: str = None, license_request_fn: Optional[Callable[[bytes], bytes]] = None):
     """Extract Widevine keys using local or remote CDM device."""
     device = None
     cdm = None
@@ -137,10 +142,45 @@ def _get_widevine_keys(pssh_list: list[dict], license_url: str, cdm_device_path:
             pssh = item["pssh"]
             kid_info = str(item.get("kid", "N/A")).replace("-", "").lower().strip()
             type_info = item.get("type", "unknown")
+
+            # Skip extra PSSH variants once this KID's key is already extracted (a manifest may
+            # offer several PSSH boxes for the same KID where only one is valid for the server).
+            if kid_info and kid_info != "n/a" and kid_info in extracted_kids:
+                continue
+
             console.print(f"[red]{type_info} [cyan](PSSH: [yellow]{pssh[:30]}...[cyan] KID: [red]{kid_info})")
 
             # Create license challenge
             challenge = cdm.get_license_challenge(session_id, PSSH(pssh))
+
+            # Custom license request (service-supplied): bypass the built-in HTTP POST.
+            if license_request_fn is not None:
+                try:
+                    license_bytes = license_request_fn(challenge)
+                except Exception as e:
+                    logger.error(f"Custom license request error for {kid_info}: {e}")
+                    console.print(f"[red]License request error for PSSH {pssh[:30]}...: {e}")
+                    continue
+
+                if not license_bytes:
+                    console.print(f"[red]License data is empty for PSSH {pssh[:30]}...]")
+                    continue
+
+                try:
+                    cdm.parse_license(session_id, license_bytes)
+                    for key_obj in cdm.get_keys(session_id):
+                        if key_obj.type != "CONTENT":
+                            continue
+                        
+                        kid = key_obj.kid.hex.lower().strip()
+                        formatted_key = f"{kid}:{key_obj.key.hex()}"
+                        if formatted_key not in all_content_keys:
+                            all_content_keys.append(formatted_key)
+                            extracted_kids.add(kid)
+                            
+                except Exception as e:
+                    console.print(f"[red]Error extracting keys for PSSH {pssh[:30]}...: {e}")
+                continue
 
             # Prepare headers (use original headers from fetch)
             req_headers = headers.copy() if headers else {}
