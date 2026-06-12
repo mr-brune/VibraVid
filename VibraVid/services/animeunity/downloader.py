@@ -43,7 +43,7 @@ def download_episode(obj_episode, index_select, scrape_serie, video_source):
     Downloads a specific episode from the specified season.
     """
     start_message()
-    console.print(f"\n[yellow]Download: [red]{site_constants.SITE_NAME} → [cyan]{scrape_serie.series_name} ([cyan]E{obj_episode.number}) \n")
+    console.print(f"\n[yellow]Download: [red]{site_constants.SITE_NAME} \u2192 [cyan]{scrape_serie.series_name} ([cyan]E{obj_episode.number}) \n")
 
     # Collect mp4 url
     video_source.get_embed(obj_episode.id, not DOWNOAD_HLS)
@@ -63,8 +63,27 @@ def download_episode(obj_episode, index_select, scrape_serie, video_source):
             season_number = int(season_number)
         except (TypeError, ValueError):
             season_number = 1
-        path_components, filename = map_episode_path(series_name=scrape_serie.series_name, series_year=None, season_number=season_number, episode_number=episode_number, episode_name=episode_name)
-        mp4_path = os_manager.get_sanitize_path(anime_folder(*path_components))
+
+        # Use the human-readable title from context (set by ARR) instead of the
+        # provider slug stored in scrape_serie.series_name.
+        series_display = getattr(context_tracker, 'title', None) or scrape_serie.series_name
+
+        path_components, filename = map_episode_path(
+            series_name=series_display,
+            series_year=None,
+            season_number=season_number,
+            episode_number=episode_number,
+            episode_name=episode_name,
+        )
+
+        # Respect the output_path injected by the ARR layer (Sonarr's series
+        # path). Fall back to the standard anime_folder when running standalone.
+        arr_output = getattr(context_tracker, 'output_path', None)
+        if arr_output:
+            mp4_path = os_manager.get_sanitize_path(arr_output)
+        else:
+            mp4_path = os_manager.get_sanitize_path(anime_folder(*path_components))
+
         mp4_name = filename
     else:
         path_components, filename = map_movie_path(scrape_serie.series_name, None)
