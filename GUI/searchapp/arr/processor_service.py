@@ -36,23 +36,25 @@ class ArrProcessorService:
     def get_missing_items(self) -> List[dict]:
         """Return all missing items (series + movies) ready for download."""
         self._logged_skipped.clear()
-        self._sonarr_tags = self.sonarr.get_tags_map()
-        self._radarr_tags = self.radarr.get_tags_map()
+        self._sonarr_tags = self.sonarr.get_tags_map() if self.sonarr else {}
+        self._radarr_tags = self.radarr.get_tags_map() if self.radarr else {}
 
         items: List[dict] = []
 
-        try:
-            sonarr_items = self._get_sonarr_missing()
-            items.extend(sonarr_items)
-        except Exception as exc:
-            logger.error(f"Failed to fetch Sonarr missing: {exc}")
+        if self.sonarr:
+            try:
+                sonarr_items = self._get_sonarr_missing()
+                items.extend(sonarr_items)
+            except Exception as exc:
+                logger.error(f"Failed to fetch Sonarr missing: {exc}")
 
-        try:
-            radarr_items = self._get_radarr_missing()
-            items.extend(radarr_items)
-        except Exception as exc:
-            logger.error(f"Failed to fetch Radarr missing: {exc}")
-
+        if self.radarr:
+            try:
+                radarr_items = self._get_radarr_missing()
+                items.extend(radarr_items)
+            except Exception as exc:
+                logger.error(f"Failed to fetch Radarr missing: {exc}")
+                
         return items
 
     # ── Sonarr ───────────────────────────────────────────
